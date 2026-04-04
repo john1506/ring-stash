@@ -102,6 +102,12 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._pending: dict[str, _PendingClip] = {}
         # Set of ding_ids already downloaded (loaded from Store on first run)
         self._downloaded_ids: set[str] = set()
+        # Set of filenames the user has locked (preserved from retention cleanup)
+        self._locked_filenames: set[str] = set()
+        # User-defined labels: filename → label string
+        self._labels: dict[str, str] = {}
+        # Ring AI descriptions captured at download time: filename → description
+        self._ai_descriptions: dict[str, str] = {}
         self._store_data: dict = {}
         self._store_loaded = False
 
@@ -120,10 +126,54 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         raw = await self._store.async_load() or {}
         self._store_data = raw
         self._downloaded_ids = set(raw.get("downloaded", {}).keys())
+        self._locked_filenames = set(raw.get("locked", []))
+        self._labels = dict(raw.get("labels", {}))
+        # Build AI description index from downloaded metadata (captured at download time)
+        self._ai_descriptions = {
+            m["filename"]: m["ai_description"]
+            for m in raw.get("downloaded", {}).values()
+            if m.get("filename") and m.get("ai_description")
+        }
         self._store_loaded = True
 
     async def _async_save_store(self) -> None:
+        self._store_data["locked"] = list(self._locked_filenames)
+        self._store_data["labels"] = self._labels
         await self._store.async_save(self._store_data)
+
+    # ── Lock helpers ──────────────────────────────────────────────────────────
+
+    def is_locked(self, filename: str) -> bool:
+        """Return True if the given filename is locked (protected from retention cleanup)."""
+        return filename in self._locked_filenames
+
+    async def async_set_lock(self, filename: str, locked: bool) -> None:
+        """Lock or unlock a clip filename, persisting the state to the Store."""
+        if locked:
+            self._locked_filenames.add(filename)
+        else:
+            self._locked_filenames.discard(filename)
+        await self._async_save_store()
+
+    # ── Label helpers ─────────────────────────────────────────────────────────
+
+    def get_label(self, filename: str) -> str:
+        """Return the user-defined label for a clip, or empty string."""
+        return self._labels.get(filename, "")
+
+    async def async_set_label(self, filename: str, label: str) -> None:
+        """Set or clear a user-defined label for a clip, persisting to the Store."""
+        if label:
+            self._labels[filename] = label
+        else:
+            self._labels.pop(filename, None)
+        await self._async_save_store()
+
+    # ── AI description helpers ────────────────────────────────────────────────
+
+    def get_ai_description(self, filename: str) -> str:
+        """Return the Ring AI-generated description captured at download time."""
+        return self._ai_descriptions.get(filename, "")
 
     def _clip_filename(self, doorbell_name: str, recorded_at: datetime, kind: str) -> str:
         safe_name = _SAFE_RE.sub("_", doorbell_name.lower())
@@ -203,6 +253,8 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             except (ValueError, AttributeError):
                 recorded_at = datetime.now(timezone.utc)
 
+            ai_description = _extract_ai_description(event)
+
             pending = _PendingClip(
                 ding_id=ding_id,
                 doorbell_id=doorbell_id,
@@ -219,7 +271,10 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                     "filename": clip.filename,
                     "doorbell_id": doorbell_id,
                     "downloaded_at": datetime.now(timezone.utc).isoformat(),
+                    "ai_description": ai_description,
                 }
+                if ai_description:
+                    self._ai_descriptions[clip.filename] = ai_description
                 self._pending.pop(ding_id, None)
             else:
                 # Queue for retry if URL wasn't ready yet
@@ -268,6 +323,9 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             if downloaded_at < cutoff:
                 filename = meta.get("filename", "")
                 if filename:
+                    # Skip files the user has explicitly locked (preserved from cleanup)
+                    if self.is_locked(filename):
+                        continue
                     path = self._download_path / filename
                     await self.hass.async_add_executor_job(_unlink_if_exists_path, path)
                 to_remove.append(ding_id)
@@ -396,3 +454,44 @@ def _stat_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _extract_ai_description(event: dict) -> str:
+    """
+    Build a human-readable description from Ring's AI/CV event fields.
+
+    Ring Protect plans populate different fields depending on the subscription
+    tier and firmware.  We try them in order from most to least specific:
+      1. ``description`` — newer plans provide a natural-language summary
+      2. ``detection_type`` — array of detected object labels (e.g. ["person"])
+      3. ``cv_properties`` — legacy boolean flags per object class
+    Returns an empty string when none of these fields are present.
+    """
+    # 1. Natural-language description (Ring AI on higher-tier plans)
+    desc = event.get("description", "")
+    if desc and isinstance(desc, str):
+        return desc.strip()
+
+    # 2. Structured detection_type array  (e.g. ["person", "package"])
+    detections = event.get("detection_type") or []
+    if detections and isinstance(detections, list):
+        labels = [str(d).replace("_", " ").title() for d in detections if d]
+        if labels:
+            return ", ".join(labels)
+
+    # 3. Legacy cv_properties boolean map
+    cv = event.get("cv_properties") or {}
+    if isinstance(cv, dict):
+        detected = []
+        if cv.get("personDetected"):
+            detected.append("Person")
+        if cv.get("vehicleDetected"):
+            detected.append("Vehicle")
+        if cv.get("packageDetected"):
+            detected.append("Package")
+        if cv.get("motionStarted") or cv.get("otherMotion"):
+            detected.append("Motion")
+        if detected:
+            return ", ".join(dict.fromkeys(detected))  # deduplicate, preserve order
+
+    return ""
