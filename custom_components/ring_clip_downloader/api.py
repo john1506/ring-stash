@@ -55,6 +55,12 @@ class TokenManager:
                 token_data = await self._refresh(token_data)
             return token_data["access_token"]
 
+    async def async_force_refresh(self) -> None:
+        """Force a token refresh, acquiring the lock to prevent concurrent refreshes."""
+        async with self._lock:
+            token_data = self._entry.data["token"]
+            await self._refresh(token_data)
+
     async def _refresh(self, old_token: dict) -> dict:
         """Obtain a new token via refresh_token grant and persist it."""
         _LOGGER.debug("Refreshing Ring access token")
@@ -123,7 +129,7 @@ class RingApiClient:
             ) as resp:
                 if resp.status == 401 and not _refreshed:
                     # Force a token refresh and retry exactly once
-                    await self._tokens._refresh(self._tokens._entry.data["token"])
+                    await self._tokens.async_force_refresh()
                     return await self._get(path, params, _refreshed=True)
                 resp.raise_for_status()
                 return await resp.json()

@@ -83,7 +83,11 @@ class RingClipDownloaderConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             path = Path(user_input[CONF_DOWNLOAD_PATH])
             try:
-                path.mkdir(parents=True, exist_ok=True)
+                resolved = path.resolve()
+                if not resolved.is_relative_to(Path("/media")):
+                    errors[CONF_DOWNLOAD_PATH] = "invalid_path"
+                else:
+                    path.mkdir(parents=True, exist_ok=True)
             except OSError:
                 errors[CONF_DOWNLOAD_PATH] = "invalid_path"
 
@@ -127,7 +131,11 @@ class RingClipOptionsFlow(OptionsFlow):
         if user_input is not None:
             path = Path(user_input[CONF_DOWNLOAD_PATH])
             try:
-                path.mkdir(parents=True, exist_ok=True)
+                resolved = path.resolve()
+                if not resolved.is_relative_to(Path("/media")):
+                    errors[CONF_DOWNLOAD_PATH] = "invalid_path"
+                else:
+                    path.mkdir(parents=True, exist_ok=True)
             except OSError:
                 errors[CONF_DOWNLOAD_PATH] = "invalid_path"
 

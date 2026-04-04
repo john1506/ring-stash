@@ -293,8 +293,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 pass
         return count
 
-    def _last_clip_for(self, doorbell_id: str) -> ClipInfo | None:
-        best: ClipInfo | None = None
+    async def _async_last_clip_for(self, doorbell_id: str) -> ClipInfo | None:
         downloaded = self._store_data.get("downloaded", {})
         all_files: list[dict] = [
             m for m in downloaded.values() if m.get("doorbell_id") == doorbell_id
@@ -308,10 +307,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         if not filename:
             return None
         path = self._download_path / filename
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
+        size = await self.hass.async_add_executor_job(_stat_size, path)
         # Reconstruct a minimal ClipInfo from stored metadata
         parts = filename.rsplit("_", 1)
         kind_label = parts[-1].replace(".mp4", "") if len(parts) > 1 else "unknown"
@@ -368,7 +364,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
 
             result[db_id] = DoorbellData(
                 name=db_name,
-                last_clip=self._last_clip_for(db_id),
+                last_clip=await self._async_last_clip_for(db_id),
                 clips_today=self._count_clips_today(db_id),
                 clips_total=sum(
                     1 for m in self._store_data.get("downloaded", {}).values()
@@ -393,3 +389,10 @@ def _unlink_if_exists_path(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+def _stat_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0

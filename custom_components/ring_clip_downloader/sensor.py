@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -102,7 +102,7 @@ class RingClipsTodaySensor(_RingClipBase):
 
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "clips"
-    _attr_state_class = "total"
+    _attr_state_class = SensorStateClass.TOTAL
 
     def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
         super().__init__(coordinator, entry, doorbell_id, doorbell_name)
