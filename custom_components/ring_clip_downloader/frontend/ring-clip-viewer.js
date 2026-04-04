@@ -1,388 +1,357 @@
 /**
- * Ring Clip Viewer — HA sidebar panel
+ * RingStash Clip Viewer — HA sidebar panel
  *
- * Renders a responsive grid of downloaded Ring clips browsable and playable
- * inline. All media is served from HA's /media endpoint — no external requests.
- *
- * Architecture:
- *  - Pure vanilla JS, no framework dependencies (keeps the component self-contained)
- *  - LitElement-style web component registered as <ring-clip-viewer>
- *  - Fetches clip list from /api/ring_clip_downloader/clips (registered in __init__.py)
- *  - Video plays inline in a modal overlay; no data leaves the local network
+ * Canvas-based thumbnail generation: each clip card loads the video into
+ * a hidden <video>, seeks to 2 seconds, then paints that frame onto a
+ * <canvas> which becomes the visible thumbnail. No server-side ffmpeg needed.
  */
 
-const CLIPS_API = "/api/ring_clip_downloader/clips";
+const CLIPS_API  = "/api/ring_clip_downloader/clips";
 const MEDIA_BASE = "/media/local/ring_clips";
 
-const KIND_ICON = { Doorbell: "🔔", Motion: "👁️", Live: "📹" };
 const KIND_COLOR = { Doorbell: "#7c8cf8", Motion: "#f8c87c", Live: "#8cf87c" };
+const KIND_ICON  = { Doorbell: "🔔", Motion: "👁", Live: "📹" };
 
+/* ── Styles ──────────────────────────────────────────────────────────────── */
 const CSS = `
   :host {
-    display: block;
-    height: 100%;
+    display: flex; flex-direction: column; height: 100%;
     background: var(--primary-background-color, #0f1117);
     color: var(--primary-text-color, #e2e4f0);
     font-family: var(--paper-font-body1_-_font-family, sans-serif);
-    overflow: hidden;
+    overflow: hidden; box-sizing: border-box;
   }
   .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 16px 20px 12px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; flex-shrink: 0; flex-wrap: wrap;
     background: var(--card-background-color, #1e2130);
     border-bottom: 1px solid rgba(255,255,255,0.07);
-    flex-wrap: wrap;
   }
-  .toolbar h1 {
-    margin: 0;
-    font-size: 1.1rem;
-    font-weight: 600;
-    flex: 1;
-    min-width: 160px;
+  .toolbar-title { font-size: 1.05rem; font-weight: 700; flex: 1; min-width: 120px; }
+  .pill-count {
+    background: var(--primary-color, #7c8cf8); color: #fff;
+    border-radius: 20px; padding: 2px 10px; font-size: 0.75rem; font-weight: 700;
   }
-  .toolbar select, .toolbar input[type=text] {
+  .filter-wrap { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-btn {
     background: var(--secondary-background-color, #181b24);
     color: var(--primary-text-color, #e2e4f0);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 0.85rem;
-    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+    padding: 5px 13px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s;
   }
-  .toolbar .badge {
-    background: var(--accent-color, #a5b4fc);
-    color: #111;
-    border-radius: 12px;
-    padding: 2px 10px;
-    font-size: 0.78rem;
-    font-weight: 700;
+  .filter-btn.active {
+    background: var(--primary-color, #7c8cf8);
+    border-color: var(--primary-color, #7c8cf8); color: #fff;
   }
-  .grid-wrap {
-    height: calc(100% - 64px);
-    overflow-y: auto;
-    padding: 16px 20px;
-    box-sizing: border-box;
+  .filter-btn:hover:not(.active) { border-color: rgba(255,255,255,0.3); }
+  select.filter-select {
+    background: var(--secondary-background-color, #181b24);
+    color: var(--primary-text-color, #e2e4f0);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+    padding: 5px 13px; font-size: 0.78rem; cursor: pointer; outline: none;
   }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 14px;
-  }
+  .grid-wrap { flex: 1; overflow-y: auto; padding: 18px 20px; box-sizing: border-box; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
   .clip-card {
-    background: var(--card-background-color, #1e2130);
-    border-radius: 10px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: transform 0.15s, box-shadow 0.15s;
+    background: var(--card-background-color, #1e2130); border-radius: 12px;
+    overflow: hidden; cursor: pointer; display: flex; flex-direction: column;
     border: 1px solid rgba(255,255,255,0.06);
-    position: relative;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s;
   }
   .clip-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    border-color: var(--primary-color, #7c8cf8);
   }
-  .clip-thumb {
-    width: 100%;
-    aspect-ratio: 16/9;
-    object-fit: cover;
-    display: block;
-    background: #111;
+  .thumb-wrap { position: relative; width: 100%; aspect-ratio: 16/9; background: #0a0b0f; overflow: hidden; }
+  .thumb-canvas { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .thumb-placeholder {
+    width: 100%; height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    color: rgba(255,255,255,0.2); font-size: 2.2rem;
   }
-  .play-overlay {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 48px;
-    height: 48px;
-    background: rgba(0,0,0,0.55);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.4rem;
-    pointer-events: none;
-    transition: background 0.15s;
+  .thumb-placeholder span { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; }
+  .thumb-loading {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.2);
   }
-  .clip-card:hover .play-overlay { background: rgba(0,0,0,0.75); }
-  .clip-info {
-    padding: 10px 12px;
+  .spinner {
+    width: 24px; height: 24px; border: 2px solid rgba(255,255,255,0.15);
+    border-top-color: rgba(255,255,255,0.7); border-radius: 50%;
+    animation: spin 0.7s linear infinite;
   }
-  .clip-kind {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.72rem;
-    font-weight: 700;
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .play-btn {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.15s; background: rgba(0,0,0,0.3);
   }
-  .clip-name {
-    font-size: 0.88rem;
-    font-weight: 500;
-    margin-bottom: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .play-btn svg { width: 52px; height: 52px; filter: drop-shadow(0 2px 8px rgba(0,0,0,0.7)); }
+  .clip-card:hover .play-btn { opacity: 1; }
+  .kind-badge {
+    position: absolute; top: 8px; left: 8px; padding: 3px 9px; border-radius: 20px;
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #111;
   }
-  .clip-meta {
-    font-size: 0.76rem;
-    color: var(--secondary-text-color, #888);
+  .clip-body { padding: 11px 13px 13px; display: flex; flex-direction: column; gap: 3px; }
+  .clip-cam { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .clip-date { font-size: 0.75rem; color: var(--secondary-text-color, #888); }
+  .clip-size { font-size: 0.7rem; color: var(--secondary-text-color, #666); margin-top: 1px; }
+  .state-msg {
+    grid-column: 1/-1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 80px 20px; gap: 16px; opacity: 0.5;
+    font-size: 0.95rem; text-align: center;
   }
-  .empty {
-    grid-column: 1/-1;
-    text-align: center;
-    padding: 60px 20px;
-    opacity: 0.5;
-    font-size: 1rem;
-  }
-  .loading {
-    grid-column: 1/-1;
-    text-align: center;
-    padding: 60px 20px;
-    opacity: 0.5;
-  }
-
-  /* Modal overlay */
+  .state-msg .icon { font-size: 3rem; }
   .modal-bg {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.88);
-    z-index: 9999;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92);
+    z-index: 9999; flex-direction: column; align-items: center;
+    justify-content: center; padding: 20px; box-sizing: border-box;
   }
   .modal-bg.open { display: flex; }
-  .modal-video {
-    max-width: min(90vw, 960px);
-    max-height: 70vh;
-    width: 100%;
-    border-radius: 8px;
-    outline: none;
-  }
-  .modal-meta {
-    margin-top: 12px;
-    color: #ccc;
-    font-size: 0.9rem;
-    text-align: center;
-  }
   .modal-close {
-    position: absolute;
-    top: 16px;
-    right: 20px;
-    background: none;
-    border: none;
-    color: #fff;
-    font-size: 1.8rem;
-    cursor: pointer;
-    line-height: 1;
-    padding: 4px 8px;
+    position: fixed; top: 14px; right: 18px; background: rgba(255,255,255,0.1);
+    border: none; color: #fff; width: 36px; height: 36px; border-radius: 50%;
+    font-size: 1.2rem; cursor: pointer; display: flex; align-items: center;
+    justify-content: center; transition: background 0.15s;
   }
-  .modal-nav {
-    display: flex;
-    gap: 20px;
-    margin-top: 14px;
+  .modal-close:hover { background: rgba(255,255,255,0.22); }
+  .modal-video {
+    width: 100%; max-width: min(92vw, 1100px); max-height: 72vh;
+    border-radius: 10px; outline: none; background: #000;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.7);
   }
-  .modal-nav button {
-    background: rgba(255,255,255,0.12);
-    border: none;
-    color: #fff;
-    padding: 8px 18px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: background 0.15s;
+  .modal-info { margin-top: 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .modal-kind { padding: 3px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; color: #111; }
+  .modal-meta { color: rgba(255,255,255,0.65); font-size: 0.85rem; }
+  .modal-nav { display: flex; gap: 12px; margin-top: 16px; }
+  .nav-btn {
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.12);
+    color: #fff; padding: 8px 20px; border-radius: 8px; cursor: pointer;
+    font-size: 0.85rem; transition: background 0.15s;
   }
-  .modal-nav button:hover { background: rgba(255,255,255,0.25); }
-  .modal-nav button:disabled { opacity: 0.3; cursor: default; }
+  .nav-btn:hover:not(:disabled) { background: rgba(255,255,255,0.2); }
+  .nav-btn:disabled { opacity: 0.25; cursor: default; }
 `;
 
+/* ── Canvas thumbnail extraction ─────────────────────────────────────────── */
+function extractThumbnail(videoUrl, canvas, onDone) {
+  const vid = document.createElement("video");
+  vid.muted = true;
+  vid.preload = "metadata";
+  vid.crossOrigin = "use-credentials";
+  let done = false;
+
+  const finish = (ok) => {
+    if (done) return;
+    done = true;
+    vid.src = "";
+    vid.load();
+    onDone(ok);
+  };
+
+  vid.addEventListener("loadedmetadata", () => {
+    vid.currentTime = Math.min(2, (vid.duration || 4) * 0.15);
+  });
+
+  vid.addEventListener("seeked", () => {
+    try {
+      const ctx = canvas.getContext("2d");
+      canvas.width  = vid.videoWidth  || 640;
+      canvas.height = vid.videoHeight || 360;
+      ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+      finish(true);
+    } catch {
+      finish(false);
+    }
+  });
+
+  vid.addEventListener("error", () => finish(false));
+  setTimeout(() => finish(false), 8000);
+  vid.src = videoUrl;
+  vid.load();
+}
+
+/* ── Component ───────────────────────────────────────────────────────────── */
 class RingClipViewer extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._clips = [];
-    this._filtered = [];
+    this._clips = []; this._filtered = [];
     this._modalIdx = -1;
-    this._filterKind = "all";
-    this._filterDoorbell = "all";
+    this._filterKind = "all"; this._filterDoorbell = "all";
   }
 
-  connectedCallback() {
-    this._render();
-    this._loadClips();
-  }
+  connectedCallback() { this._render(); this._loadClips(); }
 
   _render() {
     this.shadowRoot.innerHTML = `
       <style>${CSS}</style>
       <div class="toolbar">
-        <h1>📹 Ring Clips</h1>
-        <span class="badge" id="count">–</span>
-        <select id="filter-doorbell"><option value="all">All cameras</option></select>
-        <select id="filter-kind">
-          <option value="all">All types</option>
-          <option value="Doorbell">🔔 Doorbell</option>
-          <option value="Motion">👁️ Motion</option>
-          <option value="Live">📹 Live</option>
-        </select>
+        <div class="toolbar-title">📹 RingStash</div>
+        <span class="pill-count" id="count">–</span>
+        <div class="filter-wrap" id="kind-filters">
+          <button class="filter-btn active" data-kind="all">All</button>
+          <button class="filter-btn" data-kind="Doorbell">🔔 Doorbell</button>
+          <button class="filter-btn" data-kind="Motion">👁 Motion</button>
+          <button class="filter-btn" data-kind="Live">📹 Live</button>
+        </div>
+        <select class="filter-select" id="cam-filter"><option value="all">All cameras</option></select>
       </div>
       <div class="grid-wrap">
-        <div class="grid" id="grid"><div class="loading">Loading clips…</div></div>
+        <div class="grid" id="grid"><div class="state-msg"><div class="icon">⏳</div>Loading clips…</div></div>
       </div>
       <div class="modal-bg" id="modal">
-        <button class="modal-close" id="modal-close">✕</button>
+        <button class="modal-close" id="modal-close" title="Close (Esc)">✕</button>
         <video class="modal-video" id="modal-video" controls autoplay></video>
-        <div class="modal-meta" id="modal-meta"></div>
-        <div class="modal-nav">
-          <button id="nav-prev">◀ Previous</button>
-          <button id="nav-next">Next ▶</button>
+        <div class="modal-info">
+          <span class="modal-kind" id="modal-kind"></span>
+          <span class="modal-meta" id="modal-meta"></span>
         </div>
-      </div>
-    `;
+        <div class="modal-nav">
+          <button class="nav-btn" id="nav-prev">◀ Previous</button>
+          <button class="nav-btn" id="nav-next">Next ▶</button>
+        </div>
+      </div>`;
 
+    this.shadowRoot.getElementById("kind-filters").addEventListener("click", e => {
+      const btn = e.target.closest(".filter-btn");
+      if (!btn) return;
+      this.shadowRoot.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      this._filterKind = btn.dataset.kind;
+      this._applyFilters();
+    });
+    this.shadowRoot.getElementById("cam-filter").onchange = e => {
+      this._filterDoorbell = e.target.value; this._applyFilters();
+    };
     this.shadowRoot.getElementById("modal-close").onclick = () => this._closeModal();
-    this.shadowRoot.getElementById("modal").onclick = (e) => {
-      if (e.target === this.shadowRoot.getElementById("modal")) this._closeModal();
+    this.shadowRoot.getElementById("modal").onclick = e => {
+      if (e.target.id === "modal") this._closeModal();
     };
     this.shadowRoot.getElementById("nav-prev").onclick = () => this._navigate(-1);
-    this.shadowRoot.getElementById("nav-next").onclick = () => this._navigate(1);
-    this.shadowRoot.getElementById("filter-kind").onchange = (e) => {
-      this._filterKind = e.target.value;
-      this._applyFilters();
-    };
-    this.shadowRoot.getElementById("filter-doorbell").onchange = (e) => {
-      this._filterDoorbell = e.target.value;
-      this._applyFilters();
-    };
-
-    document.addEventListener("keydown", (e) => {
+    this.shadowRoot.getElementById("nav-next").onclick  = () => this._navigate(1);
+    document.addEventListener("keydown", e => {
       if (!this.shadowRoot.getElementById("modal").classList.contains("open")) return;
       if (e.key === "Escape") this._closeModal();
-      if (e.key === "ArrowLeft") this._navigate(-1);
+      if (e.key === "ArrowLeft")  this._navigate(-1);
       if (e.key === "ArrowRight") this._navigate(1);
     });
   }
 
   async _loadClips() {
     try {
-      const resp = await fetch(CLIPS_API, {
-        headers: { Authorization: `Bearer ${this._getToken()}` },
-      });
+      const resp = await fetch(CLIPS_API, { headers: { Authorization: `Bearer ${this._getToken()}` } });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       this._clips = await resp.json();
-      this._populateFilters();
+      const cams = [...new Set(this._clips.map(c => c.doorbell))].sort();
+      const sel = this.shadowRoot.getElementById("cam-filter");
+      sel.innerHTML = `<option value="all">All cameras</option>` +
+        cams.map(c => `<option value="${c}">${c}</option>`).join("");
       this._applyFilters();
     } catch (err) {
       this.shadowRoot.getElementById("grid").innerHTML =
-        `<div class="empty">Failed to load clips: ${err.message}</div>`;
+        `<div class="state-msg"><div class="icon">⚠️</div>Failed to load clips:<br>${err.message}</div>`;
     }
   }
 
   _getToken() {
-    // HA stores the auth token in localStorage
-    try {
-      const auth = JSON.parse(localStorage.getItem("hassTokens") || "{}");
-      return auth.access_token || "";
-    } catch {
-      return "";
-    }
-  }
-
-  _populateFilters() {
-    const doorbells = [...new Set(this._clips.map((c) => c.doorbell))].sort();
-    const sel = this.shadowRoot.getElementById("filter-doorbell");
-    sel.innerHTML = `<option value="all">All cameras</option>` +
-      doorbells.map((d) => `<option value="${d}">${d}</option>`).join("");
+    try { return JSON.parse(localStorage.getItem("hassTokens") || "{}").access_token || ""; }
+    catch { return ""; }
   }
 
   _applyFilters() {
-    this._filtered = this._clips.filter((c) => {
-      if (this._filterKind !== "all" && c.kind !== this._filterKind) return false;
-      if (this._filterDoorbell !== "all" && c.doorbell !== this._filterDoorbell) return false;
-      return true;
-    });
+    this._filtered = this._clips.filter(c =>
+      (this._filterKind === "all" || c.kind === this._filterKind) &&
+      (this._filterDoorbell === "all" || c.doorbell === this._filterDoorbell)
+    );
     this._renderGrid();
   }
 
   _renderGrid() {
     const grid = this.shadowRoot.getElementById("grid");
-    const count = this.shadowRoot.getElementById("count");
-    count.textContent = `${this._filtered.length} clip${this._filtered.length !== 1 ? "s" : ""}`;
+    this.shadowRoot.getElementById("count").textContent =
+      `${this._filtered.length} clip${this._filtered.length !== 1 ? "s" : ""}`;
 
-    if (this._filtered.length === 0) {
-      grid.innerHTML = `<div class="empty">No clips found. Ring events will appear here after the next poll.</div>`;
+    if (!this._filtered.length) {
+      grid.innerHTML = `<div class="state-msg"><div class="icon">🎬</div>No clips match this filter.</div>`;
       return;
     }
 
-    grid.innerHTML = this._filtered
-      .map((clip, idx) => {
-        const color = KIND_COLOR[clip.kind] || "#888";
-        const icon = KIND_ICON[clip.kind] || "🎥";
-        const date = new Date(clip.recorded_at);
-        const dateStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-        const timeStr = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-        return `
-          <div class="clip-card" data-idx="${idx}">
-            <video class="clip-thumb" preload="metadata" muted
-              src="${MEDIA_BASE}/${encodeURIComponent(clip.filename)}#t=0.5">
-            </video>
-            <div class="play-overlay">▶</div>
-            <div class="clip-info">
-              <span class="clip-kind" style="background:${color};color:#111">${icon} ${clip.kind}</span>
-              <div class="clip-name">${clip.doorbell}</div>
-              <div class="clip-meta">${dateStr} · ${timeStr} · ${clip.size_kb} KB</div>
+    grid.innerHTML = this._filtered.map((clip, idx) => {
+      const color   = KIND_COLOR[clip.kind] || "#888";
+      const icon    = KIND_ICON[clip.kind]  || "🎥";
+      const date    = new Date(clip.recorded_at);
+      const dateStr = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      const timeStr = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `
+        <div class="clip-card" data-idx="${idx}">
+          <div class="thumb-wrap">
+            <canvas class="thumb-canvas" data-src="${MEDIA_BASE}/${encodeURIComponent(clip.filename)}"></canvas>
+            <div class="thumb-loading"><div class="spinner"></div></div>
+            <span class="kind-badge" style="background:${color}">${icon} ${clip.kind}</span>
+            <div class="play-btn">
+              <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="40" cy="40" r="38" fill="rgba(0,0,0,0.5)" stroke="rgba(255,255,255,0.8)" stroke-width="2"/>
+                <polygon points="32,24 60,40 32,56" fill="white"/>
+              </svg>
             </div>
           </div>
-        `;
-      })
-      .join("");
+          <div class="clip-body">
+            <div class="clip-cam">${clip.doorbell}</div>
+            <div class="clip-date">${dateStr} · ${timeStr}</div>
+            <div class="clip-size">${clip.size_kb} KB</div>
+          </div>
+        </div>`;
+    }).join("");
 
-    grid.querySelectorAll(".clip-card").forEach((card) => {
+    grid.querySelectorAll(".clip-card").forEach(card => {
       card.onclick = () => this._openModal(parseInt(card.dataset.idx, 10));
     });
+
+    // Stagger thumbnail extraction — 3 at a time every 200ms
+    const canvases = [...grid.querySelectorAll(".thumb-canvas")];
+    const next = (i) => {
+      if (i >= canvases.length) return;
+      canvases.slice(i, i + 3).forEach(canvas => {
+        extractThumbnail(canvas.dataset.src, canvas, ok => {
+          const spinner = canvas.nextElementSibling;
+          spinner && spinner.remove();
+          if (!ok) {
+            const ph = document.createElement("div");
+            ph.className = "thumb-placeholder";
+            ph.innerHTML = `<span>${KIND_ICON[this._filtered[canvas.closest(".clip-card").dataset.idx]?.kind] || "🎬"}</span><span>preview unavailable</span>`;
+            canvas.replaceWith(ph);
+          }
+        });
+      });
+      setTimeout(() => next(i + 3), 200);
+    };
+    next(0);
   }
 
   _openModal(idx) {
     this._modalIdx = idx;
-    const clip = this._filtered[idx];
-    const modal = this.shadowRoot.getElementById("modal");
+    const clip  = this._filtered[idx];
     const video = this.shadowRoot.getElementById("modal-video");
-    const meta = this.shadowRoot.getElementById("modal-meta");
-
     video.src = `${MEDIA_BASE}/${encodeURIComponent(clip.filename)}`;
     video.load();
     video.play().catch(() => {});
-
-    const date = new Date(clip.recorded_at);
-    meta.textContent = `${clip.doorbell} · ${clip.kind} · ${date.toLocaleString()} · ${clip.size_kb} KB`;
-
-    modal.classList.add("open");
-    this._updateNavButtons();
+    this.shadowRoot.getElementById("modal-kind").textContent = `${KIND_ICON[clip.kind] || ""} ${clip.kind}`;
+    this.shadowRoot.getElementById("modal-kind").style.background = KIND_COLOR[clip.kind] || "#888";
+    this.shadowRoot.getElementById("modal-meta").textContent =
+      `${clip.doorbell} · ${new Date(clip.recorded_at).toLocaleString()} · ${clip.size_kb} KB`;
+    this.shadowRoot.getElementById("modal").classList.add("open");
+    this.shadowRoot.getElementById("nav-prev").disabled = idx <= 0;
+    this.shadowRoot.getElementById("nav-next").disabled = idx >= this._filtered.length - 1;
   }
 
   _closeModal() {
-    const modal = this.shadowRoot.getElementById("modal");
     const video = this.shadowRoot.getElementById("modal-video");
-    video.pause();
-    video.src = "";
-    modal.classList.remove("open");
+    video.pause(); video.src = "";
+    this.shadowRoot.getElementById("modal").classList.remove("open");
   }
 
   _navigate(dir) {
     const next = this._modalIdx + dir;
     if (next >= 0 && next < this._filtered.length) this._openModal(next);
-  }
-
-  _updateNavButtons() {
-    this.shadowRoot.getElementById("nav-prev").disabled = this._modalIdx <= 0;
-    this.shadowRoot.getElementById("nav-next").disabled =
-      this._modalIdx >= this._filtered.length - 1;
   }
 }
 
