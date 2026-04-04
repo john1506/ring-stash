@@ -177,9 +177,20 @@ class RingClipViewer extends HTMLElement {
     this._clips = []; this._filtered = [];
     this._modalIdx = -1;
     this._filterKind = "all"; this._filterDoorbell = "all";
+    this._hass = null;
+    this._loaded = false;
   }
 
-  connectedCallback() { this._render(); this._loadClips(); }
+  // HA passes the hass object to every custom panel via this setter
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._loaded) {
+      this._loaded = true;
+      this._loadClips();
+    }
+  }
+
+  connectedCallback() { this._render(); }
 
   _render() {
     this.shadowRoot.innerHTML = `
@@ -238,7 +249,7 @@ class RingClipViewer extends HTMLElement {
 
   async _loadClips() {
     try {
-      const resp = await fetch(CLIPS_API, { headers: { Authorization: `Bearer ${this._getToken()}` } });
+      const resp = await fetch(CLIPS_API, { headers: { Authorization: `Bearer ${this._hass.auth.data.access_token}` } });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       this._clips = await resp.json();
       const cams = [...new Set(this._clips.map(c => c.doorbell))].sort();
@@ -250,11 +261,6 @@ class RingClipViewer extends HTMLElement {
       this.shadowRoot.getElementById("grid").innerHTML =
         `<div class="state-msg"><div class="icon">⚠️</div>Failed to load clips:<br>${err.message}</div>`;
     }
-  }
-
-  _getToken() {
-    try { return JSON.parse(localStorage.getItem("hassTokens") || "{}").access_token || ""; }
-    catch { return ""; }
   }
 
   _applyFilters() {
