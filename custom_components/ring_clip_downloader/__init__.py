@@ -17,7 +17,7 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.components.frontend import async_register_built_in_panel
 
 from .const import (
@@ -97,11 +97,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Serve the frontend JS
-    hass.http.register_static_path(
-        "/ring_clip_downloader_frontend",
-        str(FRONTEND_JS.parent),
-        cache_headers=True,
-    )
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            "/ring_clip_downloader_frontend",
+            str(FRONTEND_JS.parent),
+            cache_headers=True,
+        )
+    ])
 
     # Listen for options updates
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
