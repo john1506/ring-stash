@@ -7,7 +7,7 @@
  */
 
 const CLIPS_API  = "/api/ring_clip_downloader/clips";
-const MEDIA_BASE = "/media/local/ring_clips";
+const MEDIA_BASE = "/ring_clip_downloader_media";
 
 const KIND_COLOR = { Doorbell: "#7c8cf8", Motion: "#f8c87c", Live: "#8cf87c" };
 const KIND_ICON  = { Doorbell: "🔔", Motion: "👁", Live: "📹" };

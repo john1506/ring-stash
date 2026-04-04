@@ -96,13 +96,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         require_admin=False,
     )
 
-    # Serve the frontend JS
+    # Serve the frontend JS and the downloaded clips (no-auth static paths)
     await hass.http.async_register_static_paths([
         StaticPathConfig(
             "/ring_clip_downloader_frontend",
             str(FRONTEND_JS.parent),
             cache_headers=True,
-        )
+        ),
+        StaticPathConfig(
+            "/ring_clip_downloader_media",
+            download_path,
+            cache_headers=False,
+        ),
     ])
 
     # Listen for options updates
