@@ -1,0 +1,42 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ring Clip Downloader",
+        "description": "Using your existing Ring account ({ring_account}) to download clips. Configure where to save them below.",
+        "data": {
+          "download_path": "Download path",
+          "retention_days": "Keep clips for (days)",
+          "poll_interval": "Check for new clips every (minutes)"
+        },
+        "data_description": {
+          "download_path": "Must be inside /media so clips are accessible in HA Media Browser",
+          "retention_days": "Clips older than this will be automatically deleted",
+          "poll_interval": "Lower values use more Ring API quota"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Ring Clip Downloader is already configured",
+      "ring_not_configured": "No Ring integration found. Set up the Ring integration first."
+    },
+    "error": {
+      "invalid_path": "Path could not be created. Ensure it is inside /media."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ring Clip Downloader options",
+        "data": {
+          "download_path": "Download path",
+          "retention_days": "Keep clips for (days)",
+          "poll_interval": "Check for new clips every (minutes)"
+        }
+      }
+    },
+    "error": {
+      "invalid_path": "Path could not be created. Ensure it is inside /media."
+    }
+  }
+}

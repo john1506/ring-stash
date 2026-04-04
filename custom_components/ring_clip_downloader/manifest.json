@@ -1,0 +1,13 @@
+{
+  "domain": "ring_clip_downloader",
+  "name": "Ring Clip Downloader",
+  "version": "1.0.0",
+  "documentation": "https://github.com/john1506/ring-clip-downloader",
+  "issue_tracker": "https://github.com/john1506/ring-clip-downloader/issues",
+  "dependencies": ["ring", "http", "frontend"],
+  "after_dependencies": ["ring"],
+  "codeowners": ["@john1506"],
+  "requirements": [],
+  "iot_class": "cloud_polling",
+  "config_flow": true
+}
