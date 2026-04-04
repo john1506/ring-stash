@@ -23,10 +23,12 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_DOWNLOAD_PATH,
+    CONF_PANEL_TITLE,
     CONF_POLL_INTERVAL,
     CONF_RETENTION_DAYS,
     CONF_RING_ENTRY_ID,
     DEFAULT_DOWNLOAD_PATH,
+    DEFAULT_PANEL_TITLE,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_RETENTION_DAYS,
     DOMAIN,
@@ -42,6 +44,10 @@ def _get_ring_entries(hass) -> list:
 def _options_schema(defaults: dict) -> vol.Schema:
     return vol.Schema(
         {
+            vol.Required(
+                CONF_PANEL_TITLE,
+                default=defaults.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
+            ): TextSelector(),
             vol.Required(
                 CONF_DOWNLOAD_PATH,
                 default=defaults.get(CONF_DOWNLOAD_PATH, DEFAULT_DOWNLOAD_PATH),
@@ -96,6 +102,7 @@ class RingClipDownloaderConfigFlow(ConfigFlow, domain=DOMAIN):
                     title="Ring Clip Downloader",
                     data={
                         CONF_RING_ENTRY_ID: ring_entries[0].entry_id,
+                        CONF_PANEL_TITLE: user_input.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
                         CONF_DOWNLOAD_PATH: str(path),
                         CONF_RETENTION_DAYS: int(user_input[CONF_RETENTION_DAYS]),
                         CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL]),
@@ -143,6 +150,7 @@ class RingClipOptionsFlow(OptionsFlow):
                 return self.async_create_entry(
                     title="",
                     data={
+                        CONF_PANEL_TITLE: user_input.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
                         CONF_DOWNLOAD_PATH: str(path),
                         CONF_RETENTION_DAYS: int(user_input[CONF_RETENTION_DAYS]),
                         CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL]),

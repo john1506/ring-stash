@@ -5,11 +5,13 @@
         "title": "Ring Clip Downloader",
         "description": "Using your existing Ring account ({ring_account}) to download clips. Configure where to save them below.",
         "data": {
+          "panel_title": "Sidebar panel name",
           "download_path": "Download path",
           "retention_days": "Keep clips for (days)",
           "poll_interval": "Check for new clips every (minutes)"
         },
         "data_description": {
+          "panel_title": "Label shown in the HA sidebar and panel header",
           "download_path": "Must be inside /media so clips are accessible in HA Media Browser",
           "retention_days": "Clips older than this will be automatically deleted",
           "poll_interval": "Lower values use more Ring API quota"
@@ -29,9 +31,13 @@
       "init": {
         "title": "Ring Clip Downloader options",
         "data": {
+          "panel_title": "Sidebar panel name",
           "download_path": "Download path",
           "retention_days": "Keep clips for (days)",
           "poll_interval": "Check for new clips every (minutes)"
+        },
+        "data_description": {
+          "panel_title": "Label shown in the HA sidebar and panel header"
         }
       }
     },

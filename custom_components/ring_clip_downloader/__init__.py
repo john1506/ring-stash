@@ -22,11 +22,13 @@ from homeassistant.components.frontend import async_register_built_in_panel
 
 from .const import (
     CONF_DOWNLOAD_PATH,
+    CONF_PANEL_TITLE,
     CONF_POLL_INTERVAL,
     CONF_RETENTION_DAYS,
     CONF_RING_ENTRY_ID,
     DATA_COORDINATOR,
     DEFAULT_DOWNLOAD_PATH,
+    DEFAULT_PANEL_TITLE,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_RETENTION_DAYS,
     DOMAIN,
@@ -59,6 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     download_path = config.get(CONF_DOWNLOAD_PATH, DEFAULT_DOWNLOAD_PATH)
     retention_days = int(config.get(CONF_RETENTION_DAYS, DEFAULT_RETENTION_DAYS))
     poll_interval = int(config.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
+    panel_title = config.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE)
 
     coordinator = RingClipCoordinator(
         hass,
@@ -78,37 +81,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the REST API endpoint for the frontend panel
     hass.http.register_view(RingClipListView(download_path))
 
-    # Register the sidebar panel
+    # Register the sidebar panel (safe to call on every setup — HA updates if already registered)
     async_register_built_in_panel(
         hass,
         component_name="custom",
-        sidebar_title="Ring Clips",
+        sidebar_title=panel_title,
         sidebar_icon="mdi:doorbell-video",
         frontend_url_path="ring-clips",
         config={
             "_panel_custom": {
                 "name": "ring-clip-viewer",
-                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js",
+                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js?v=1.0.2",
                 "embed_iframe": False,
                 "trust_external": False,
-            }
+            },
+            "panel_title": panel_title,
         },
         require_admin=False,
     )
 
-    # Serve the frontend JS and the downloaded clips (no-auth static paths)
-    await hass.http.async_register_static_paths([
-        StaticPathConfig(
-            "/ring_clip_downloader_frontend",
-            str(FRONTEND_JS.parent),
-            cache_headers=True,
-        ),
-        StaticPathConfig(
-            "/ring_clip_downloader_media",
-            download_path,
-            cache_headers=False,
-        ),
-    ])
+    # Serve the frontend JS and the downloaded clips (no-auth static paths).
+    # aiohttp raises ValueError if the same URL prefix is registered twice, so guard
+    # against that when the config entry reloads (e.g. after an options change).
+    if not hass.data[DOMAIN].get("_static_registered"):
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(
+                "/ring_clip_downloader_frontend",
+                str(FRONTEND_JS.parent),
+                cache_headers=True,
+            ),
+            StaticPathConfig(
+                "/ring_clip_downloader_media",
+                download_path,
+                cache_headers=False,
+            ),
+        ])
+        hass.data[DOMAIN]["_static_registered"] = True
 
     # Listen for options updates
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))

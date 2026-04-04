@@ -7,11 +7,13 @@ CONF_RING_ENTRY_ID = "ring_entry_id"
 CONF_DOWNLOAD_PATH = "download_path"
 CONF_RETENTION_DAYS = "retention_days"
 CONF_POLL_INTERVAL = "poll_interval"
+CONF_PANEL_TITLE = "panel_title"
 
 # Defaults
 DEFAULT_DOWNLOAD_PATH = "/media/ring_clips"
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_POLL_INTERVAL = 5  # minutes
+DEFAULT_PANEL_TITLE = "Ring Stash"
 
 # Ring API — no credentials stored here; all auth comes from the Ring config entry
 RING_API_BASE = "https://api.ring.com"

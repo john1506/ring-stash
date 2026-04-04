@@ -1,11 +1,10 @@
 {
   "domain": "ring_clip_downloader",
   "name": "Ring Clip Downloader",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "documentation": "https://github.com/john1506/ring-stash",
   "issue_tracker": "https://github.com/john1506/ring-stash/issues",
   "dependencies": ["ring", "http", "frontend"],
-  "after_dependencies": ["ring"],
   "codeowners": ["@john1506"],
   "requirements": [],
   "iot_class": "cloud_polling",

@@ -1,5 +1,5 @@
 /**
- * RingStash Clip Viewer — HA sidebar panel
+ * Ring Stash Clip Viewer — HA sidebar panel
  *
  * Canvas-based thumbnail generation: each clip card loads the video into
  * a hidden <video>, seeks to 2 seconds, then paints that frame onto a
@@ -181,6 +181,11 @@ class RingClipViewer extends HTMLElement {
     this._loaded = false;
   }
 
+  // HA passes the panel config object (includes our custom panel_title)
+  set panel(panel) {
+    this._panel = panel;
+  }
+
   // HA passes the hass object to every custom panel via this setter
   set hass(hass) {
     this._hass = hass;
@@ -196,7 +201,7 @@ class RingClipViewer extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${CSS}</style>
       <div class="toolbar">
-        <div class="toolbar-title">📹 RingStash</div>
+        <div class="toolbar-title">📹 ${this._panel?.config?.panel_title ?? "Ring Stash"}</div>
         <span class="pill-count" id="count">–</span>
         <div class="filter-wrap" id="kind-filters">
           <button class="filter-btn active" data-kind="all">All</button>
@@ -249,9 +254,8 @@ class RingClipViewer extends HTMLElement {
 
   async _loadClips() {
     try {
-      const resp = await fetch(CLIPS_API, { headers: { Authorization: `Bearer ${this._hass.auth.data.access_token}` } });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      this._clips = await resp.json();
+      // hass.callApi handles auth correctly on all platforms (browser + Companion app)
+      this._clips = await this._hass.callApi("GET", "ring_clip_downloader/clips");
       const cams = [...new Set(this._clips.map(c => c.doorbell))].sort();
       const sel = this.shadowRoot.getElementById("cam-filter");
       sel.innerHTML = `<option value="all">All cameras</option>` +
