@@ -91,7 +91,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={
             "_panel_custom": {
                 "name": "ring-clip-viewer",
-                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js?v=1.0.2",
+                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js?v=1.0.3",
                 "embed_iframe": False,
                 "trust_external": False,
             },

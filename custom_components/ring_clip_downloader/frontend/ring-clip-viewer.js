@@ -131,8 +131,62 @@ const CSS = `
   .nav-btn:disabled { opacity: 0.25; cursor: default; }
 `;
 
+/* ── Thumbnail IndexedDB cache ───────────────────────────────────────────── */
+const _THUMB_DB_NAME = "ring_stash_thumbs";
+const _THUMB_STORE   = "thumbnails";
+
+function _openThumbDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_THUMB_DB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(_THUMB_STORE);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+async function _getCached(key) {
+  try {
+    const db = await _openThumbDB();
+    return await new Promise((res, rej) => {
+      const req = db.transaction(_THUMB_STORE).objectStore(_THUMB_STORE).get(key);
+      req.onsuccess = e => { db.close(); res(e.target.result ?? null); };
+      req.onerror   = e => { db.close(); rej(e.target.error); };
+    });
+  } catch { return null; }
+}
+
+async function _putCached(key, dataUrl) {
+  try {
+    const db = await _openThumbDB();
+    await new Promise((res, rej) => {
+      const tx  = db.transaction(_THUMB_STORE, "readwrite");
+      const req = tx.objectStore(_THUMB_STORE).put(dataUrl, key);
+      req.onsuccess = () => { db.close(); res(); };
+      req.onerror   = e => { db.close(); rej(e.target.error); };
+    });
+  } catch { /* non-fatal — thumbnail still shown, just not cached */ }
+}
+
 /* ── Canvas thumbnail extraction ─────────────────────────────────────────── */
-function extractThumbnail(videoUrl, canvas, onDone) {
+async function extractThumbnail(videoUrl, canvas, onDone) {
+  // Serve from cache if available — avoids re-loading the video every visit
+  const cached = await _getCached(videoUrl);
+  if (cached) {
+    const img = new Image();
+    img.onload = () => {
+      canvas.width  = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      onDone(true);
+    };
+    img.onerror = () => _extractFromVideo(videoUrl, canvas, onDone);
+    img.src = cached;
+    return;
+  }
+  _extractFromVideo(videoUrl, canvas, onDone);
+}
+
+function _extractFromVideo(videoUrl, canvas, onDone) {
   const vid = document.createElement("video");
   vid.muted = true;
   vid.preload = "metadata";
@@ -157,6 +211,8 @@ function extractThumbnail(videoUrl, canvas, onDone) {
       canvas.width  = vid.videoWidth  || 640;
       canvas.height = vid.videoHeight || 360;
       ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+      // Persist to cache (JPEG at 70% — typically 10-30 KB per thumbnail)
+      _putCached(videoUrl, canvas.toDataURL("image/jpeg", 0.7));
       finish(true);
     } catch {
       finish(false);
