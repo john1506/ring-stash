@@ -18,6 +18,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.frontend import async_register_built_in_panel
 
 from .const import (
     CONF_DOWNLOAD_PATH,
@@ -78,7 +79,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(RingClipListView(download_path))
 
     # Register the sidebar panel
-    hass.components.frontend.async_register_built_in_panel(
+    async_register_built_in_panel(
+        hass,
         component_name="custom",
         sidebar_title="Ring Clips",
         sidebar_icon="mdi:doorbell-video",
@@ -86,7 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={
             "_panel_custom": {
                 "name": "ring-clip-viewer",
-                "js_url": f"/ring_clip_downloader_frontend/ring-clip-viewer.js",
+                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js",
                 "embed_iframe": False,
                 "trust_external": False,
             }

@@ -62,7 +62,6 @@ class _RingClipBase(CoordinatorEntity[RingClipCoordinator], SensorEntity):
             "name": self._doorbell_name,
             "manufacturer": "Ring",
             "model": "Doorbell",
-            "via_device": (DOMAIN, self._entry.entry_id),
         }
 
 
