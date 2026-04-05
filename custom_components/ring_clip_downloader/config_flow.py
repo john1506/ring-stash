@@ -1,4 +1,4 @@
-"""Config flow for Ring Clip Downloader.
+"""Config flow for Ring Stash.
 
 Discovers the existing Ring integration automatically — the user never
 enters credentials here. We only ask for storage and retention preferences.
@@ -99,7 +99,7 @@ class RingClipDownloaderConfigFlow(ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 return self.async_create_entry(
-                    title="Ring Clip Downloader",
+                    title="Ring Stash",
                     data={
                         CONF_RING_ENTRY_ID: ring_entries[0].entry_id,
                         CONF_PANEL_TITLE: user_input.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),

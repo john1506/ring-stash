@@ -1,4 +1,4 @@
-"""Sensor entities for Ring Clip Downloader."""
+"""Sensor entities for Ring Stash."""
 from __future__ import annotations
 
 import logging

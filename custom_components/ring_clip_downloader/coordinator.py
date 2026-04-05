@@ -1,5 +1,5 @@
 """
-DataUpdateCoordinator for Ring Clip Downloader.
+DataUpdateCoordinator for Ring Stash.
 
 Responsibilities:
 - Periodic polling for new clips across all configured doorbells

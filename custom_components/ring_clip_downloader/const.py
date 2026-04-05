@@ -1,4 +1,4 @@
-"""Constants for Ring Clip Downloader."""
+"""Constants for Ring Stash."""
 DOMAIN = "ring_clip_downloader"
 PLATFORMS = ["sensor"]
 

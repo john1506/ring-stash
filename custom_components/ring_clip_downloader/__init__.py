@@ -1,5 +1,5 @@
 """
-Ring Clip Downloader — Home Assistant custom integration.
+Ring Stash — Home Assistant custom integration.
 
 Automatically downloads Ring doorbell clips to local storage using the
 existing Ring integration's auth token. Never stores or exposes credentials.
@@ -43,7 +43,7 @@ FRONTEND_JS = Path(__file__).parent / "frontend" / "ring-clip-viewer.js"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Ring Clip Downloader from a config entry."""
+    """Set up Ring Stash from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     # Resolve the Ring config entry referenced at setup time
@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ring_entry = hass.config_entries.async_get_entry(ring_entry_id)
     if ring_entry is None:
         _LOGGER.error(
-            "Ring integration entry %s not found — re-configure Ring Clip Downloader",
+            "Ring integration entry %s not found — re-configure Ring Stash",
             ring_entry_id,
         )
         return False
@@ -128,7 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a Ring Clip Downloader config entry."""
+    """Unload a Ring Stash config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)

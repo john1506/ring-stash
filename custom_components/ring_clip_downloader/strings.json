@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Ring Clip Downloader",
+        "title": "Ring Stash",
         "description": "Using your existing Ring account ({ring_account}) to download clips. Configure where to save them below.",
         "data": {
           "panel_title": "Sidebar panel name",
@@ -19,7 +19,7 @@
       }
     },
     "abort": {
-      "already_configured": "Ring Clip Downloader is already configured",
+      "already_configured": "Ring Stash is already configured",
       "ring_not_configured": "No Ring integration found. Set up the Ring integration first."
     },
     "error": {
@@ -29,7 +29,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Ring Clip Downloader options",
+        "title": "Ring Stash options",
         "data": {
           "panel_title": "Sidebar panel name",
           "download_path": "Download path",
