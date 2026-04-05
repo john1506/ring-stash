@@ -94,7 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={
             "_panel_custom": {
                 "name": "ring-stash-viewer",
-                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=2.0.0",
+                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=2.1.0",
                 "embed_iframe": False,
                 "trust_external": False,
             },
@@ -149,6 +149,21 @@ def _get_coordinator(hass, entry_id: str):
     return entry_data.get(DATA_COORDINATOR)
 
 
+def _normalize_search_text(value: str) -> str:
+    """Normalize clip metadata for case-insensitive text search."""
+    return " ".join(str(value or "").lower().replace("_", " ").replace("-", " ").split())
+
+
+def _clip_matches_search(search: str, *fields: str) -> bool:
+    """Return True when every search term appears somewhere in the clip metadata."""
+    terms = _normalize_search_text(search).split()
+    if not terms:
+        return True
+
+    searchable = " ".join(_normalize_search_text(field) for field in fields if field)
+    return all(term in searchable for term in terms)
+
+
 # ── REST API view ─────────────────────────────────────────────────────────────
 
 class RingClipListView(HomeAssistantView):
@@ -181,11 +196,12 @@ class RingClipListView(HomeAssistantView):
             limit, offset = 48, 0
         from_date = q.get("from_date", "")  # YYYY-MM-DD (inclusive)
         to_date   = q.get("to_date",   "")  # YYYY-MM-DD (inclusive)
+        search    = q.get("search",    "").strip()
 
         hass        = request.app["hass"]
         coordinator = _get_coordinator(hass, self._entry_id)
         result = await hass.async_add_executor_job(
-            self._scan_clips, coordinator, limit, offset, from_date, to_date
+            self._scan_clips, coordinator, limit, offset, from_date, to_date, search
         )
         return Response(body=json.dumps(result), content_type="application/json")
 
@@ -196,12 +212,13 @@ class RingClipListView(HomeAssistantView):
         offset: int,
         from_date: str,
         to_date: str,
+        search: str,
     ) -> dict:
         """
-        Scan the clip directory, apply date-range filters, and return one page.
+        Scan the clip directory, apply filters, and return one page.
 
         Returns {"total": N, "clips": [...]} where total is the count of all
-        clips matching the date filter (not just the current page), so the
+        clips matching the active filters (not just the current page), so the
         frontend can decide when all pages have been loaded.
 
         Only filename-derived metadata is returned — no full paths, no tokens.
@@ -231,13 +248,26 @@ class RingClipListView(HomeAssistantView):
             if to_date and file_date and file_date > to_date:
                 continue
 
-            matched.append((f, file_date, file_time, doorbell, kind))
+            label = coordinator.get_label(f.name) if coordinator else ""
+            ai_description = coordinator.get_ai_description(f.name) if coordinator else ""
+
+            if search and not _clip_matches_search(
+                search,
+                f.name,
+                doorbell,
+                kind,
+                label,
+                ai_description,
+            ):
+                continue
+
+            matched.append((f, file_date, file_time, doorbell, kind, label, ai_description))
 
         total = len(matched)
         page  = matched[offset : offset + limit]
 
         clips = []
-        for f, file_date, file_time, doorbell, kind in page:
+        for f, file_date, file_time, doorbell, kind, label, ai_description in page:
             try:
                 size_kb = round(f.stat().st_size / 1024, 1)
             except OSError:
@@ -250,8 +280,8 @@ class RingClipListView(HomeAssistantView):
                 "recorded_at":    recorded_at,
                 "size_kb":        size_kb,
                 "locked":         coordinator.is_locked(f.name) if coordinator else False,
-                "label":          coordinator.get_label(f.name) if coordinator else "",
-                "ai_description": coordinator.get_ai_description(f.name) if coordinator else "",
+                "label":          label,
+                "ai_description": ai_description,
             })
 
         return {"total": total, "clips": clips}

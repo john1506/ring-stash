@@ -8,7 +8,7 @@
  *    (another IntersectionObserver). Extracted frames are cached in IndexedDB
  *    so re-visits are instant.
  *  - Kind and camera filters are client-side (fast, no re-fetch).
- *  - Date range filter is server-side (resets the accumulated list).
+ *  - Search and date range filters are server-side (reset the accumulated list).
  *
  * The entire module is wrapped in an IIFE so const declarations don't pollute
  * the global scope and the script can safely be re-evaluated when HA re-mounts
@@ -65,6 +65,15 @@ const CSS = `
     border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
     padding: 5px 13px; font-size: 0.78rem; cursor: pointer; outline: none;
   }
+  .search-input {
+    flex: 1 1 240px; min-width: min(240px, 100%); max-width: 420px;
+    background: var(--secondary-background-color, #181b24);
+    color: var(--primary-text-color, #e2e4f0);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+    padding: 6px 14px; font-size: 0.78rem; outline: none;
+  }
+  .search-input::placeholder { color: var(--secondary-text-color, #888); }
+  .search-input:focus { border-color: rgba(124,140,248,0.7); }
   .refresh-btn {
     background: none; border: 1px solid rgba(255,255,255,0.12); border-radius: 50%;
     color: var(--secondary-text-color, #888); width: 30px; height: 30px; flex-shrink: 0;
@@ -383,12 +392,13 @@ class RingClipViewer extends HTMLElement {
     // Paginated clip state
     this._allClips = [];  // clips fetched from server (accumulates across pages)
     this._filtered = [];  // after kind/camera client-side filter
-    this._total    = 0;   // total clips on server matching the active date filter
+    this._total    = 0;   // total clips on server matching the active server-side filters
     this._offset   = 0;   // number of server clips fetched so far
     this._loading  = false;
     // Active filters
     this._fromDate       = "";
     this._toDate         = "";
+    this._searchText     = "";
     this._filterKind     = "all";
     this._filterDoorbell = "all";
     // Misc
@@ -398,6 +408,7 @@ class RingClipViewer extends HTMLElement {
     this._loaded        = false;
     this._cacheChecked  = false; // run stale-thumbnail purge once per session
     this._pollTimer     = null;  // setInterval handle for auto-refresh polling
+    this._searchDebounce = null; // timeout handle for server-backed search input
     this._thumbObs      = null;  // IntersectionObserver for lazy thumbnails
     this._sentinelObs   = null;  // IntersectionObserver for infinite scroll
   }
@@ -413,6 +424,7 @@ class RingClipViewer extends HTMLElement {
 
   disconnectedCallback() {
     this._stopPolling();
+    if (this._searchDebounce) { clearTimeout(this._searchDebounce); this._searchDebounce = null; }
     if (this._thumbObs)    { this._thumbObs.disconnect();    this._thumbObs    = null; }
     if (this._sentinelObs) { this._sentinelObs.disconnect(); this._sentinelObs = null; }
   }
@@ -424,6 +436,7 @@ class RingClipViewer extends HTMLElement {
         <div class="toolbar-title">📹 ${this._panel?.config?.panel_title ?? "Ring Stash"}</div>
         <button class="refresh-btn" id="refresh-btn" title="Refresh clips">↻</button>
         <span class="pill-count" id="count">–</span>
+        <input type="search" class="search-input" id="search-input" placeholder="Search AI descriptions, notes, cameras…">
         <div class="filter-wrap" id="kind-filters">
           <button class="filter-btn active" data-kind="all">All</button>
           <button class="filter-btn" data-kind="Doorbell">🔔 Doorbell</button>
@@ -459,6 +472,13 @@ class RingClipViewer extends HTMLElement {
       </div>`;
 
     this.shadowRoot.getElementById("refresh-btn").onclick = () => this._resetAndLoad();
+    this.shadowRoot.getElementById("search-input").value = this._searchText;
+    this.shadowRoot.getElementById("search-input").addEventListener("input", e => {
+      const next = e.target.value.trim();
+      if (next === this._searchText) return;
+      this._searchText = next;
+      this._scheduleSearch();
+    });
 
     this.shadowRoot.getElementById("kind-filters").addEventListener("click", e => {
       const btn = e.target.closest(".filter-btn");
@@ -512,6 +532,14 @@ class RingClipViewer extends HTMLElement {
 
   // ── Data loading ────────────────────────────────────────────────────────
 
+  _scheduleSearch() {
+    if (this._searchDebounce) clearTimeout(this._searchDebounce);
+    this._searchDebounce = setTimeout(() => {
+      this._searchDebounce = null;
+      this._resetAndLoad();
+    }, 200);
+  }
+
   _resetAndLoad() {
     this._allClips    = [];
     this._filtered    = [];
@@ -534,6 +562,7 @@ class RingClipViewer extends HTMLElement {
     const p = new URLSearchParams({ limit: PAGE_SIZE, offset: this._offset });
     if (this._fromDate) p.set("from_date", this._fromDate);
     if (this._toDate)   p.set("to_date",   this._toDate);
+    if (this._searchText) p.set("search", this._searchText);
 
     try {
       const data = await this._hass.callApi("GET", `ring_stash/clips?${p}`);
@@ -593,6 +622,7 @@ class RingClipViewer extends HTMLElement {
       const p = new URLSearchParams({ limit: 1, offset: 0 });
       if (this._fromDate) p.set("from_date", this._fromDate);
       if (this._toDate)   p.set("to_date",   this._toDate);
+      if (this._searchText) p.set("search", this._searchText);
       const data = await this._hass.callApi("GET", `ring_stash/clips?${p}`);
       const totalChanged   = data.total !== this._total;
       const newestChanged  = data.clips?.[0]?.filename !== this._allClips[0]?.filename;

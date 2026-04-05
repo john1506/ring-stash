@@ -145,11 +145,20 @@ class RingApiClient:
         data = await self._get("/clients_api/ring_devices")
         return data.get("doorbots", []) + data.get("video_doorbells", [])
 
-    async def async_get_history(self, doorbell_id: int | str, limit: int = 20) -> list[dict]:
+    async def async_get_history(
+        self,
+        doorbell_id: int | str,
+        limit: int = 20,
+        older_than: int | str | None = None,
+    ) -> list[dict]:
         """Return the most recent ``limit`` events for a doorbell."""
+        params = {"limit": limit}
+        if older_than is not None:
+            params["older_than"] = older_than
+
         return await self._get(
             f"/clients_api/doorbots/{doorbell_id}/history",
-            params={"limit": limit},
+            params=params,
         )
 
     async def async_get_clip_url(self, ding_id: int | str) -> str | None:

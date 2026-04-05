@@ -15,7 +15,7 @@ Ring Stash is a Home Assistant custom integration that automatically downloads a
 
 - 📥 **Auto-download** — clips appear locally within seconds of Ring processing them
 - 🔄 **Smart retry** — polls until the clip URL is ready (up to 3 minutes), never drops a recording
-- 🗂️ **Sidebar viewer** — browse clips in a grid, filter by camera or event type, play inline
+- 🗂️ **Sidebar viewer** — browse clips in a grid, search AI descriptions and notes, filter by camera or event type, play inline
 - 🗑️ **Retention policy** — auto-delete clips older than your configured limit
 - 🔒 **No extra credentials** — reuses your existing Ring integration auth token
 - 📊 **Sensor entities** — last clip timestamp, clips today count per doorbell
@@ -50,7 +50,7 @@ Copy `custom_components/ring_stash/` into your HA `config/custom_components/` di
 
 ## Sidebar Panel
 
-The **Ring Stash** panel (📹 in the sidebar) shows a filterable grid of all downloaded clips. Click any clip to play it inline. Use the camera and event type filters to find what you're looking for. Navigate between clips with arrow keys or the on-screen buttons.
+The **Ring Stash** panel (📹 in the sidebar) shows a filterable grid of all downloaded clips. Click any clip to play it inline. Use search, camera, and event type filters to find what you're looking for. Navigate between clips with arrow keys or the on-screen buttons.
 
 ## Entities
 

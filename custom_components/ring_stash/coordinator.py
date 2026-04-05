@@ -42,6 +42,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _KIND_LABEL = {"ding": "Doorbell", "motion": "Motion", "on_demand": "Live"}
 _SAFE_RE = re.compile(r"[^a-z0-9_\-]")
+_HISTORY_PAGE_LIMIT = 100
 
 
 @dataclass
@@ -73,6 +74,7 @@ class _PendingClip:
     doorbell_name: str
     kind: str
     recorded_at: datetime
+    ai_description: str = ""
     queued_at: float = field(default_factory=time.monotonic)
 
     def is_expired(self) -> bool:
@@ -108,6 +110,8 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._labels: dict[str, str] = {}
         # Ring AI descriptions captured at download time: filename → description
         self._ai_descriptions: dict[str, str] = {}
+        # Doorbell IDs that have completed one full paged history scan.
+        self._history_scan_complete: set[str] = set()
         self._store_data: dict = {}
         self._store_loaded = False
 
@@ -128,6 +132,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._downloaded_ids = set(raw.get("downloaded", {}).keys())
         self._locked_filenames = set(raw.get("locked", []))
         self._labels = dict(raw.get("labels", {}))
+        self._history_scan_complete = {str(v) for v in raw.get("history_scan_complete", [])}
         # Build AI description index from downloaded metadata (captured at download time)
         self._ai_descriptions = {
             m["filename"]: m["ai_description"]
@@ -139,6 +144,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
     async def _async_save_store(self) -> None:
         self._store_data["locked"] = list(self._locked_filenames)
         self._store_data["labels"] = self._labels
+        self._store_data["history_scan_complete"] = sorted(self._history_scan_complete)
         await self._store.async_save(self._store_data)
 
     # ── Lock helpers ──────────────────────────────────────────────────────────
@@ -242,8 +248,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             if not ding_id or ding_id in self._downloaded_ids:
                 continue
 
-            recording = event.get("recording") or {}
-            if recording.get("status") not in ("ready", "uploading", "inprogress"):
+            if not _event_has_recoverable_clip(event):
                 continue  # No subscription coverage or event not recorded
 
             kind = event.get("kind", "unknown")
@@ -261,6 +266,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 doorbell_name=doorbell_name,
                 kind=kind,
                 recorded_at=recorded_at,
+                ai_description=ai_description,
             )
 
             clip = await self._async_download_clip(pending)
@@ -281,8 +287,49 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 if ding_id not in self._pending:
                     _LOGGER.debug("Clip %s not ready yet, queuing for retry", ding_id)
                     self._pending[ding_id] = pending
+                elif ai_description and not self._pending[ding_id].ai_description:
+                    self._pending[ding_id].ai_description = ai_description
 
         return results
+
+    async def _async_recover_history(self, doorbell_id: str, doorbell_name: str) -> None:
+        """Page through Ring history until recent downloadable events are covered."""
+        older_than: str | None = None
+        full_scan_required = doorbell_id not in self._history_scan_complete
+
+        while True:
+            history = await self._api.async_get_history(
+                doorbell_id,
+                limit=_HISTORY_PAGE_LIMIT,
+                older_than=older_than,
+            )
+            if not history:
+                if full_scan_required:
+                    self._history_scan_complete.add(doorbell_id)
+                return
+
+            page_has_recoverable_unknown = any(
+                (ding_id := str(event.get("id", "")))
+                and ding_id not in self._downloaded_ids
+                and _event_has_recoverable_clip(event)
+                for event in history
+            )
+
+            await self._async_process_history(doorbell_id, doorbell_name, history)
+
+            if len(history) < _HISTORY_PAGE_LIMIT:
+                if full_scan_required:
+                    self._history_scan_complete.add(doorbell_id)
+                return
+
+            next_cursor = str(history[-1].get("id", ""))
+            if not next_cursor or next_cursor == older_than:
+                return
+
+            if not full_scan_required and not page_has_recoverable_unknown:
+                return
+
+            older_than = next_cursor
 
     async def _async_retry_pending(self) -> list[ClipInfo]:
         """Retry any clips whose URL wasn't ready in a previous cycle."""
@@ -301,7 +348,10 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                     "filename": clip.filename,
                     "doorbell_id": pending.doorbell_id,
                     "downloaded_at": datetime.now(timezone.utc).isoformat(),
+                    "ai_description": pending.ai_description,
                 }
+                if pending.ai_description:
+                    self._ai_descriptions[clip.filename] = pending.ai_description
                 self._pending.pop(ding_id)
 
         return results
@@ -415,8 +465,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 db_name = db_name.get("name", db_id)
 
             try:
-                history = await self._api.async_get_history(db_id, limit=20)
-                await self._async_process_history(db_id, db_name, history)
+                await self._async_recover_history(db_id, db_name)
             except (RingApiError, RingAuthError) as exc:
                 _LOGGER.warning("Failed to fetch history for %s: %s", db_name, exc)
 
@@ -454,6 +503,12 @@ def _stat_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _event_has_recoverable_clip(event: dict) -> bool:
+    """Return True when the Ring event can still yield a downloadable clip."""
+    recording = event.get("recording") or {}
+    return recording.get("status") in ("ready", "uploading", "inprogress")
 
 
 def _extract_ai_description(event: dict) -> str:
