@@ -51,6 +51,8 @@ secrets.yaml
 *.jpeg
 *.png
 *.webp
+!custom_components/ring_clip_downloader/brand/icon.png
+!custom_components/ring_clip_downloader/brand/logo.png
 
 # HACS / release artefacts
 *.zip
