@@ -64,6 +64,10 @@ class DoorbellData:
     last_clip: ClipInfo | None = None
     clips_today: int = 0
     clips_total: int = 0
+    clips_motion: int = 0
+    clips_doorbell: int = 0
+    clips_live: int = 0
+    storage_bytes: int = 0
 
 
 @dataclass
@@ -114,6 +118,8 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._history_scan_complete: set[str] = set()
         self._store_data: dict = {}
         self._store_loaded = False
+        # Ensures the one-time background full-history scan is only scheduled once.
+        self._full_scan_scheduled = False
 
         super().__init__(
             hass,
@@ -292,10 +298,25 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
 
         return results
 
-    async def _async_recover_history(self, doorbell_id: str, doorbell_name: str) -> None:
-        """Page through Ring history until recent downloadable events are covered."""
+    async def _async_recover_history(
+        self,
+        doorbell_id: str,
+        doorbell_name: str,
+        *,
+        full_scan: bool = False,
+    ) -> None:
+        """Fetch Ring history and process new downloadable clips.
+
+        When ``full_scan=False`` (default, used during normal update cycles),
+        only the most recent page is fetched — fast enough to stay within HA's
+        60-second platform-setup window.
+
+        When ``full_scan=True`` (used by the one-time background task), pages
+        through the entire Ring history until the doorbell is marked complete in
+        ``_history_scan_complete``.
+        """
         older_than: str | None = None
-        full_scan_required = doorbell_id not in self._history_scan_complete
+        scan_needed = doorbell_id not in self._history_scan_complete
 
         while True:
             history = await self._api.async_get_history(
@@ -304,7 +325,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 older_than=older_than,
             )
             if not history:
-                if full_scan_required:
+                if scan_needed:
                     self._history_scan_complete.add(doorbell_id)
                 return
 
@@ -318,7 +339,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             await self._async_process_history(doorbell_id, doorbell_name, history)
 
             if len(history) < _HISTORY_PAGE_LIMIT:
-                if full_scan_required:
+                if scan_needed:
                     self._history_scan_complete.add(doorbell_id)
                 return
 
@@ -326,10 +347,44 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             if not next_cursor or next_cursor == older_than:
                 return
 
-            if not full_scan_required and not page_has_recoverable_unknown:
+            # Fast mode: stop after the first page regardless.
+            if not full_scan:
+                return
+
+            # Full-scan mode: keep going only while there is more work to do.
+            if not scan_needed and not page_has_recoverable_unknown:
                 return
 
             older_than = next_cursor
+
+    async def _async_full_history_scan(self) -> None:
+        """Background task: page through all Ring history for unscanned doorbells.
+
+        Runs once after the first successful coordinator update so it does not
+        block HA startup.  Errors are logged but never raise — the next HA
+        restart will retry any doorbells that weren't marked complete.
+        """
+        _LOGGER.info("Ring Stash: starting background history scan")
+        try:
+            doorbells = await self._api.async_get_doorbells()
+        except (RingApiError, RingAuthError) as exc:
+            _LOGGER.warning("Ring Stash: background history scan could not get doorbells: %s", exc)
+            return
+
+        for doorbell in doorbells:
+            db_id = str(doorbell.get("id", ""))
+            if db_id in self._history_scan_complete:
+                continue
+            db_name = doorbell.get("description") or doorbell.get("name") or db_id
+            if isinstance(db_name, dict):
+                db_name = db_name.get("name", db_id)
+            try:
+                await self._async_recover_history(db_id, db_name, full_scan=True)
+            except (RingApiError, RingAuthError) as exc:
+                _LOGGER.warning("Ring Stash: background scan failed for %s: %s", db_name, exc)
+
+        await self._async_save_store()
+        _LOGGER.info("Ring Stash: background history scan complete")
 
     async def _async_retry_pending(self) -> list[ClipInfo]:
         """Retry any clips whose URL wasn't ready in a previous cycle."""
@@ -465,7 +520,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 db_name = db_name.get("name", db_id)
 
             try:
-                await self._async_recover_history(db_id, db_name)
+                await self._async_recover_history(db_id, db_name)  # fast mode: 1 page
             except (RingApiError, RingAuthError) as exc:
                 _LOGGER.warning("Failed to fetch history for %s: %s", db_name, exc)
 
@@ -479,6 +534,22 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 ),
             )
 
+        # Populate per-doorbell storage + kind breakdowns via a single dir scan.
+        storage = await self.hass.async_add_executor_job(self._scan_storage_stats)
+        for db_id, stats in storage.items():
+            if db_id in result:
+                result[db_id].storage_bytes  = stats["bytes"]
+                result[db_id].clips_motion   = stats["motion"]
+                result[db_id].clips_doorbell = stats["doorbell"]
+                result[db_id].clips_live     = stats["live"]
+
+        # Schedule the one-time background full-history scan (first update only).
+        if not self._full_scan_scheduled and any(
+            str(d.get("id", "")) not in self._history_scan_complete for d in doorbells
+        ):
+            self._full_scan_scheduled = True
+            self.hass.async_create_task(self._async_full_history_scan())
+
         # Cleanup old clips once per cycle
         await self._async_cleanup_old_clips()
         await self._async_save_store()
@@ -489,6 +560,45 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         )
 
         return result
+
+
+    def _scan_storage_stats(self) -> dict[str, dict]:
+        """Scan the download directory and return per-doorbell size/kind stats.
+
+        Runs in a thread-pool executor — no async operations allowed here.
+        Returns a dict keyed by doorbell_id:
+          {"bytes": int, "motion": int, "doorbell": int, "live": int}
+        """
+        downloaded = self._store_data.get("downloaded", {})
+        file_to_db: dict[str, str] = {
+            m["filename"]: m["doorbell_id"]
+            for m in downloaded.values()
+            if m.get("filename") and m.get("doorbell_id")
+        }
+        stats: dict[str, dict] = {}
+        try:
+            for path in self._download_path.iterdir():
+                if path.suffix != ".mp4":
+                    continue
+                db_id = file_to_db.get(path.name)
+                if not db_id:
+                    continue
+                if db_id not in stats:
+                    stats[db_id] = {"bytes": 0, "motion": 0, "doorbell": 0, "live": 0}
+                try:
+                    stats[db_id]["bytes"] += path.stat().st_size
+                except OSError:
+                    pass
+                stem = path.stem.lower()
+                if stem.endswith("_motion"):
+                    stats[db_id]["motion"] += 1
+                elif stem.endswith("_doorbell"):
+                    stats[db_id]["doorbell"] += 1
+                elif stem.endswith("_live"):
+                    stats[db_id]["live"] += 1
+        except OSError:
+            pass
+        return stats
 
 
 def _unlink_if_exists_path(path: Path) -> None:

@@ -84,24 +84,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(RingClipLockView(entry.entry_id))
     hass.http.register_view(RingClipLabelView(entry.entry_id))
 
-    # Register the sidebar panel (safe to call on every setup — HA updates if already registered)
-    async_register_built_in_panel(
-        hass,
-        component_name="custom",
-        sidebar_title=panel_title,
-        sidebar_icon="mdi:doorbell-video",
-        frontend_url_path="ring-stash",
-        config={
-            "_panel_custom": {
-                "name": "ring-stash-viewer",
-                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=1.0.1",
-                "embed_iframe": False,
-                "trust_external": False,
+    # Register the sidebar panel — guard against a second config entry attempting
+    # the same registration (raises ValueError on duplicate frontend_url_path).
+    if not hass.data[DOMAIN].get("_panel_registered"):
+        async_register_built_in_panel(
+            hass,
+            component_name="custom",
+            sidebar_title=panel_title,
+            sidebar_icon="mdi:doorbell-video",
+            frontend_url_path="ring-stash",
+            config={
+                "_panel_custom": {
+                    "name": "ring-stash-viewer",
+                    "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=1.0.1",
+                    "embed_iframe": False,
+                    "trust_external": False,
+                },
+                "panel_title": panel_title,
             },
-            "panel_title": panel_title,
-        },
-        require_admin=False,
-    )
+            require_admin=False,
+        )
+        hass.data[DOMAIN]["_panel_registered"] = True
 
     # Serve the frontend JS and the downloaded clips (no-auth static paths).
     # aiohttp raises ValueError if the same URL prefix is registered twice, so guard

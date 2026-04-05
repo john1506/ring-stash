@@ -4,8 +4,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfInformation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -30,12 +35,28 @@ async def async_setup_entry(
     for doorbell_id, data in coordinator.data.items():
         entities.append(RingLastClipSensor(coordinator, entry, doorbell_id, data.name))
         entities.append(RingClipsTodaySensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingTotalClipsSensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingStorageSensor(coordinator, entry, doorbell_id, data.name))
+
+    # Global sensors — span all doorbells
+    entities.append(RingGlobalTotalClipsSensor(coordinator, entry))
+    entities.append(RingGlobalStorageSensor(coordinator, entry))
+    entities.append(RingGlobalClipsTodaySensor(coordinator, entry))
 
     async_add_entities(entities)
 
 
+# ── Shared base ───────────────────────────────────────────────────────────────
+
+_RING_STASH_DEVICE = {
+    "manufacturer": "Ring",
+    "model": "Ring Stash",
+    "entry_type": "service",
+}
+
+
 class _RingClipBase(CoordinatorEntity[RingClipCoordinator], SensorEntity):
-    """Base class for Ring Clip sensors."""
+    """Base class for per-doorbell Ring Stash sensors."""
 
     def __init__(
         self,
@@ -58,12 +79,29 @@ class _RingClipBase(CoordinatorEntity[RingClipCoordinator], SensorEntity):
     @property
     def device_info(self):
         return {
-            "identifiers": {(DOMAIN, self._doorbell_id)},
-            "name": self._doorbell_name,
-            "manufacturer": "Ring",
-            "model": "Doorbell",
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Ring Stash",
+            **_RING_STASH_DEVICE,
         }
 
+
+class _RingGlobalBase(CoordinatorEntity[RingClipCoordinator], SensorEntity):
+    """Base class for global (cross-doorbell) Ring Stash sensors."""
+
+    def __init__(self, coordinator: RingClipCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Ring Stash",
+            **_RING_STASH_DEVICE,
+        }
+
+
+# ── Per-doorbell sensors ──────────────────────────────────────────────────────
 
 class RingLastClipSensor(_RingClipBase):
     """Timestamp and metadata of the most recently downloaded clip."""
@@ -102,7 +140,7 @@ class RingClipsTodaySensor(_RingClipBase):
 
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "clips"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
         super().__init__(coordinator, entry, doorbell_id, doorbell_name)
@@ -120,3 +158,143 @@ class RingClipsTodaySensor(_RingClipBase):
         if not data:
             return {}
         return {"total_clips": data.clips_total}
+
+
+class RingTotalClipsSensor(_RingClipBase):
+    """Total clips stored on disk for this doorbell, with a per-kind breakdown."""
+
+    _attr_icon = "mdi:file-video-outline"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_total_clips"
+        self._attr_name = f"{doorbell_name} Total Clips"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_total if data else 0
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self._doorbell_data
+        if not data:
+            return {}
+        return {
+            "motion": data.clips_motion,
+            "doorbell": data.clips_doorbell,
+            "live": data.clips_live,
+        }
+
+
+class RingStorageSensor(_RingClipBase):
+    """Total disk space used by this doorbell's clips."""
+
+    _attr_device_class = SensorDeviceClass.DATA_SIZE
+    _attr_native_unit_of_measurement = UnitOfInformation.MEGABYTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:harddisk"
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_storage_mb"
+        self._attr_name = f"{doorbell_name} Storage Used"
+
+    @property
+    def native_value(self) -> float:
+        data = self._doorbell_data
+        if not data:
+            return 0.0
+        return round(data.storage_bytes / (1024 * 1024), 2)
+
+
+# ── Global sensors ────────────────────────────────────────────────────────────
+
+class RingGlobalTotalClipsSensor(_RingGlobalBase):
+    """Total clips stored on disk across all doorbells."""
+
+    _attr_icon = "mdi:video-multiple"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_global_total_clips"
+        self._attr_name = "Ring Stash Total Clips"
+
+    @property
+    def native_value(self) -> int:
+        if not self.coordinator.data:
+            return 0
+        return sum(d.clips_total for d in self.coordinator.data.values())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.coordinator.data:
+            return {}
+        motion = sum(d.clips_motion for d in self.coordinator.data.values())
+        doorbell = sum(d.clips_doorbell for d in self.coordinator.data.values())
+        live = sum(d.clips_live for d in self.coordinator.data.values())
+        return {"motion": motion, "doorbell": doorbell, "live": live}
+
+
+class RingGlobalStorageSensor(_RingGlobalBase):
+    """Total disk space used by all Ring Stash clips across all doorbells."""
+
+    _attr_device_class = SensorDeviceClass.DATA_SIZE
+    _attr_native_unit_of_measurement = UnitOfInformation.MEGABYTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:harddisk"
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_global_storage_mb"
+        self._attr_name = "Ring Stash Total Storage"
+
+    @property
+    def native_value(self) -> float:
+        if not self.coordinator.data:
+            return 0.0
+        total_bytes = sum(d.storage_bytes for d in self.coordinator.data.values())
+        return round(total_bytes / (1024 * 1024), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.coordinator.data:
+            return {}
+        return {
+            cam: f"{round(d.storage_bytes / (1024 * 1024), 1)} MB"
+            for cam, d in self.coordinator.data.items()
+        }
+
+
+class RingGlobalClipsTodaySensor(_RingGlobalBase):
+    """Total clips downloaded today across all doorbells."""
+
+    _attr_icon = "mdi:calendar-today"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_global_clips_today"
+        self._attr_name = "Ring Stash Clips Today"
+
+    @property
+    def native_value(self) -> int:
+        if not self.coordinator.data:
+            return 0
+        return sum(d.clips_today for d in self.coordinator.data.values())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.coordinator.data:
+            return {}
+        return {
+            d.name: d.clips_today
+            for d in self.coordinator.data.values()
+        }
