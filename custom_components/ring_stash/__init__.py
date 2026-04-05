@@ -94,7 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={
             "_panel_custom": {
                 "name": "ring-stash-viewer",
-                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=2.1.0",
+                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=1.0.1",
                 "embed_iframe": False,
                 "trust_external": False,
             },

@@ -1,7 +1,7 @@
 {
   "domain": "ring_stash",
   "name": "Ring Stash",
-  "version": "2.0.0",
+  "version": "1.0.1",
   "documentation": "https://github.com/john1506/ring-stash",
   "issue_tracker": "https://github.com/john1506/ring-stash/issues",
   "dependencies": ["ring", "http", "frontend"],
