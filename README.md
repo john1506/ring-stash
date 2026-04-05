@@ -44,7 +44,7 @@ Copy `custom_components/ring_clip_downloader/` into your HA `config/custom_compo
 ## Setup
 
 1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **RingStash**
+2. Search for **Ring Clip Downloader**
 3. Configure your download path (must be inside `/media`), retention period, and poll interval
 4. Done — clips will start appearing in **Settings → Media → Local Media → ring_clips** and in the **Ring Clips** sidebar panel
 
