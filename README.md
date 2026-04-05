@@ -1,8 +1,8 @@
-# RingStash
+# Ring Stash
 
 **Your Ring clips, your server.**
 
-RingStash is a Home Assistant custom integration that automatically downloads and stores Ring doorbell clips to your local Home Assistant server the moment they're ready. Browse, filter, and watch footage from a built-in sidebar panel — no Ring app, no cloud dependency for playback.
+Ring Stash is a Home Assistant custom integration that automatically downloads and stores Ring doorbell clips to your local Home Assistant server the moment they're ready. Browse, filter, and watch footage from a built-in sidebar panel — no Ring app, no cloud dependency for playback.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=john1506&repository=ring-stash&category=integration)
 
@@ -34,7 +34,7 @@ RingStash is a Home Assistant custom integration that automatically downloads an
 
 1. In HACS, go to **Integrations → ⋮ → Custom repositories**
 2. Add `https://github.com/john1506/ring-stash` as an **Integration**
-3. Search for **RingStash** and install
+3. Search for **Ring Stash** and install
 4. Restart Home Assistant
 
 ### Manual
@@ -44,7 +44,7 @@ Copy `custom_components/ring_clip_downloader/` into your HA `config/custom_compo
 ## Setup
 
 1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **Ring Clip Downloader**
+2. Search for **Ring Stash**
 3. Configure your download path (must be inside `/media`), retention period, and poll interval
 4. Done — clips will start appearing in **Settings → Media → Local Media → ring_clips** and in the **Ring Clips** sidebar panel
 
