@@ -39,7 +39,7 @@ Ring Stash is a Home Assistant custom integration that automatically downloads a
 
 ### Manual
 
-Copy `custom_components/ring_clip_downloader/` into your HA `config/custom_components/` directory and restart.
+Copy `custom_components/ring_stash/` into your HA `config/custom_components/` directory and restart.
 
 ## Setup
 

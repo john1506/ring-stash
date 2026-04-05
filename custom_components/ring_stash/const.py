@@ -1,5 +1,5 @@
 """Constants for Ring Stash."""
-DOMAIN = "ring_clip_downloader"
+DOMAIN = "ring_stash"
 PLATFORMS = ["sensor"]
 
 # Config entry keys

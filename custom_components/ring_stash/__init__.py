@@ -6,7 +6,7 @@ existing Ring integration's auth token. Never stores or exposes credentials.
 Provides:
   - Sensor entities (last clip, clips today)
   - REST API endpoint for the frontend panel clip listing
-  - Sidebar panel (ring-clip-viewer web component)
+  - Sidebar panel (ring-stash-viewer web component)
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ from .coordinator import RingClipCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-FRONTEND_URL = "/ring_clip_downloader_panel"
-FRONTEND_JS = Path(__file__).parent / "frontend" / "ring-clip-viewer.js"
+FRONTEND_URL = "/ring_stash_panel"
+FRONTEND_JS = Path(__file__).parent / "frontend" / "ring-stash-viewer.js"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -90,11 +90,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         component_name="custom",
         sidebar_title=panel_title,
         sidebar_icon="mdi:doorbell-video",
-        frontend_url_path="ring-clips",
+        frontend_url_path="ring-stash",
         config={
             "_panel_custom": {
-                "name": "ring-clip-viewer",
-                "js_url": "/ring_clip_downloader_frontend/ring-clip-viewer.js?v=1.1.0-labels",
+                "name": "ring-stash-viewer",
+                "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=2.0.0",
                 "embed_iframe": False,
                 "trust_external": False,
             },
@@ -109,12 +109,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data[DOMAIN].get("_static_registered"):
         await hass.http.async_register_static_paths([
             StaticPathConfig(
-                "/ring_clip_downloader_frontend",
+                "/ring_stash_frontend",
                 str(FRONTEND_JS.parent),
                 cache_headers=True,
             ),
             StaticPathConfig(
-                "/ring_clip_downloader_media",
+                "/ring_stash_media",
                 download_path,
                 cache_headers=False,
             ),
@@ -153,7 +153,7 @@ def _get_coordinator(hass, entry_id: str):
 
 class RingClipListView(HomeAssistantView):
     """
-    GET /api/ring_clip_downloader/clips
+    GET /api/ring_stash/clips
 
     Returns a JSON list of clip metadata for the frontend panel.
     Requires HA authentication (HomeAssistantView enforces this by default).
@@ -161,8 +161,8 @@ class RingClipListView(HomeAssistantView):
     via the /media endpoint.
     """
 
-    url = "/api/ring_clip_downloader/clips"
-    name = "api:ring_clip_downloader:clips"
+    url = "/api/ring_stash/clips"
+    name = "api:ring_stash:clips"
     requires_auth = True  # HA enforces Bearer token validation automatically
 
     def __init__(self, download_path: str, entry_id: str) -> None:
@@ -259,7 +259,7 @@ class RingClipListView(HomeAssistantView):
 
 class RingClipLockView(HomeAssistantView):
     """
-    POST /api/ring_clip_downloader/lock
+    POST /api/ring_stash/lock
     Body: {"filename": "front_door_2026-04-04_14-01-25_Doorbell.mp4", "locked": true}
 
     Persists the lock state for a clip in the coordinator's HA Store.
@@ -267,8 +267,8 @@ class RingClipLockView(HomeAssistantView):
     Only the filename (basename) is accepted — path traversal is rejected.
     """
 
-    url = "/api/ring_clip_downloader/lock"
-    name = "api:ring_clip_downloader:lock"
+    url = "/api/ring_stash/lock"
+    name = "api:ring_stash:lock"
     requires_auth = True
 
     def __init__(self, entry_id: str) -> None:
@@ -301,7 +301,7 @@ class RingClipLockView(HomeAssistantView):
 
 class RingClipFilenamesView(HomeAssistantView):
     """
-    GET /api/ring_clip_downloader/filenames
+    GET /api/ring_stash/filenames
 
     Returns the full list of clip filenames currently on disk.
     Used by the frontend to purge stale IndexedDB thumbnail entries for
@@ -311,8 +311,8 @@ class RingClipFilenamesView(HomeAssistantView):
     A plain glob with no stat() calls makes this very cheap even at scale.
     """
 
-    url = "/api/ring_clip_downloader/filenames"
-    name = "api:ring_clip_downloader:filenames"
+    url = "/api/ring_stash/filenames"
+    name = "api:ring_stash:filenames"
     requires_auth = True
 
     def __init__(self, download_path: str) -> None:
@@ -334,7 +334,7 @@ class RingClipFilenamesView(HomeAssistantView):
 
 class RingClipLabelView(HomeAssistantView):
     """
-    POST /api/ring_clip_downloader/label
+    POST /api/ring_stash/label
     Body: {"filename": "front_door_2026-04-04_14-01-25_Doorbell.mp4", "label": "Parcel delivery"}
 
     Stores a user-defined label for a clip in the coordinator's HA Store.
@@ -342,8 +342,8 @@ class RingClipLabelView(HomeAssistantView):
     Only the filename (basename) is accepted — path traversal is rejected.
     """
 
-    url = "/api/ring_clip_downloader/label"
-    name = "api:ring_clip_downloader:label"
+    url = "/api/ring_stash/label"
+    name = "api:ring_stash:label"
     requires_auth = True
 
     def __init__(self, entry_id: str) -> None:

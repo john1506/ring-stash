@@ -17,7 +17,7 @@
 
 (() => {
 
-const MEDIA_BASE = "/ring_clip_downloader_media";
+const MEDIA_BASE = "/ring_stash_media";
 const PAGE_SIZE  = 48;
 
 const KIND_COLOR = { Doorbell: "#7c8cf8", Motion: "#f8c87c", Live: "#8cf87c" };
@@ -536,7 +536,7 @@ class RingClipViewer extends HTMLElement {
     if (this._toDate)   p.set("to_date",   this._toDate);
 
     try {
-      const data = await this._hass.callApi("GET", `ring_clip_downloader/clips?${p}`);
+      const data = await this._hass.callApi("GET", `ring_stash/clips?${p}`);
       this._total = data.total ?? 0;
       this._allClips.push(...(data.clips ?? []));
       this._offset = this._allClips.length;
@@ -593,7 +593,7 @@ class RingClipViewer extends HTMLElement {
       const p = new URLSearchParams({ limit: 1, offset: 0 });
       if (this._fromDate) p.set("from_date", this._fromDate);
       if (this._toDate)   p.set("to_date",   this._toDate);
-      const data = await this._hass.callApi("GET", `ring_clip_downloader/clips?${p}`);
+      const data = await this._hass.callApi("GET", `ring_stash/clips?${p}`);
       const totalChanged   = data.total !== this._total;
       const newestChanged  = data.clips?.[0]?.filename !== this._allClips[0]?.filename;
       if (totalChanged || newestChanged) this._resetAndLoad();
@@ -604,7 +604,7 @@ class RingClipViewer extends HTMLElement {
     // Fetch the full list of filenames currently on disk (cheap — no stat calls)
     // then remove any IndexedDB thumbnail entries whose file no longer exists.
     try {
-      const data       = await this._hass.callApi("GET", "ring_clip_downloader/filenames");
+      const data       = await this._hass.callApi("GET", "ring_stash/filenames");
       const validKeys  = new Set(
         (data.filenames ?? []).map(f => `${MEDIA_BASE}/${encodeURIComponent(f)}`)
       );
@@ -780,7 +780,7 @@ class RingClipViewer extends HTMLElement {
     const clip = this._allClips.find(c => c.filename === filename);
     if (clip) clip.locked = nowLocked;
     try {
-      await this._hass.callApi("POST", "ring_clip_downloader/lock", { filename, locked: nowLocked });
+      await this._hass.callApi("POST", "ring_stash/lock", { filename, locked: nowLocked });
     } catch {
       // Revert optimistic update on failure
       btn.classList.toggle("locked", !nowLocked);
@@ -823,7 +823,7 @@ class RingClipViewer extends HTMLElement {
       if (newLabel === current) return;
       if (clip) clip.label = newLabel;
       try {
-        await this._hass.callApi("POST", "ring_clip_downloader/label", { filename, label: newLabel });
+        await this._hass.callApi("POST", "ring_stash/label", { filename, label: newLabel });
       } catch { /* non-fatal — label stays in-memory even if persist fails */ }
     };
 
@@ -861,7 +861,7 @@ class RingClipViewer extends HTMLElement {
       if (newLabel === current) return;
       if (clip) clip.label = newLabel;
       try {
-        await this._hass.callApi("POST", "ring_clip_downloader/label", { filename, label: newLabel });
+        await this._hass.callApi("POST", "ring_stash/label", { filename, label: newLabel });
       } catch { /* non-fatal */ }
     };
 
@@ -922,8 +922,8 @@ class RingClipViewer extends HTMLElement {
   }
 }
 
-if (!customElements.get("ring-clip-viewer")) {
-  customElements.define("ring-clip-viewer", RingClipViewer);
+if (!customElements.get("ring-stash-viewer")) {
+  customElements.define("ring-stash-viewer", RingClipViewer);
 }
 
 })(); // end IIFE
