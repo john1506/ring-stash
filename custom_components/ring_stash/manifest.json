@@ -1,12 +1,12 @@
 {
   "domain": "ring_stash",
   "name": "Ring Stash",
-  "version": "1.0.4",
-  "documentation": "https://github.com/john1506/ring-stash",
-  "issue_tracker": "https://github.com/john1506/ring-stash/issues",
-  "dependencies": ["ring", "http", "frontend"],
   "codeowners": ["@john1506"],
-  "requirements": [],
+  "config_flow": true,
+  "dependencies": ["ring", "http", "frontend"],
+  "documentation": "https://github.com/john1506/ring-stash",
   "iot_class": "cloud_polling",
-  "config_flow": true
+  "issue_tracker": "https://github.com/john1506/ring-stash/issues",
+  "requirements": [],
+  "version": "1.0.4"
 }
