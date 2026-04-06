@@ -278,7 +278,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         )
 
     async def _async_process_history(
-        self, doorbell_id: str, doorbell_name: str, history: list[dict]
+        self, doorbell_id: str, doorbell_name: str, history: list[dict], *, full_scan: bool = False
     ) -> list[ClipInfo]:
         """Attempt to download any new clips from a history batch."""
         results: list[ClipInfo] = []
@@ -288,7 +288,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             if not ding_id or ding_id in self._downloaded_ids:
                 continue
 
-            if not _event_has_recoverable_clip(event):
+            if not _event_has_recoverable_clip(event, ready_only=full_scan):
                 continue  # No subscription coverage or event not recorded
 
             kind = event.get("kind", "unknown")
@@ -370,7 +370,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 for event in history
             )
 
-            await self._async_process_history(doorbell_id, doorbell_name, history)
+            await self._async_process_history(doorbell_id, doorbell_name, history, full_scan=full_scan)
 
             if len(history) < _HISTORY_PAGE_LIMIT:
                 if scan_needed:
@@ -677,10 +677,18 @@ def _stat_size(path: Path) -> int:
         return 0
 
 
-def _event_has_recoverable_clip(event: dict) -> bool:
-    """Return True when the Ring event can still yield a downloadable clip."""
+def _event_has_recoverable_clip(event: dict, *, ready_only: bool = False) -> bool:
+    """Return True when the Ring event can still yield a downloadable clip.
+
+    When ``ready_only=True`` (used during full history scans), only "ready"
+    clips are considered recoverable — historical "uploading"/"inprogress"
+    events are permanently stuck and would just pollute the pending queue.
+    """
     recording = event.get("recording") or {}
-    return recording.get("status") in ("ready", "uploading", "inprogress")
+    status = recording.get("status")
+    if ready_only:
+        return status == "ready"
+    return status in ("ready", "uploading", "inprogress")
 
 
 def _extract_ai_description(event: dict) -> str:
