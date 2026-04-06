@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -63,6 +64,8 @@ class DoorbellData:
     name: str
     last_clip: ClipInfo | None = None
     clips_today: int = 0
+    clips_this_week: int = 0
+    clips_this_month: int = 0
     clips_total: int = 0
     clips_motion: int = 0
     clips_doorbell: int = 0
@@ -120,6 +123,8 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._store_loaded = False
         # Ensures the one-time background full-history scan is only scheduled once.
         self._full_scan_scheduled = False
+        # Global stats updated each cycle
+        self._free_space_bytes: int = 0
 
         super().__init__(
             hass,
@@ -186,6 +191,35 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
     def get_ai_description(self, filename: str) -> str:
         """Return the Ring AI-generated description captured at download time."""
         return self._ai_descriptions.get(filename, "")
+
+    # ── Global stat properties (used by global sensor entities) ──────────────
+
+    @property
+    def pending_count(self) -> int:
+        """Number of clips queued waiting for their download URL to become ready."""
+        return len(self._pending)
+
+    @property
+    def locked_count(self) -> int:
+        """Number of clips locked from automatic retention cleanup."""
+        return len(self._locked_filenames)
+
+    @property
+    def free_space_bytes(self) -> int:
+        """Free bytes on the media partition (updated each coordinator cycle)."""
+        return self._free_space_bytes
+
+    def oldest_clip_date(self) -> datetime | None:
+        """Timestamp of the oldest downloaded clip, or None if no clips stored."""
+        oldest: datetime | None = None
+        for meta in self._store_data.get("downloaded", {}).values():
+            try:
+                dt = datetime.fromisoformat(meta["downloaded_at"])
+                if oldest is None or dt < oldest:
+                    oldest = dt
+            except (KeyError, ValueError):
+                pass
+        return oldest
 
     def _clip_filename(self, doorbell_name: str, recorded_at: datetime, kind: str) -> str:
         safe_name = _SAFE_RE.sub("_", doorbell_name.lower())
@@ -456,6 +490,19 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 pass
         return count
 
+    def _count_clips_since(self, doorbell_id: str, cutoff: datetime) -> int:
+        """Count clips for a doorbell downloaded on or after ``cutoff``."""
+        count = 0
+        for meta in self._store_data.get("downloaded", {}).values():
+            if meta.get("doorbell_id") != doorbell_id:
+                continue
+            try:
+                if datetime.fromisoformat(meta["downloaded_at"]) >= cutoff:
+                    count += 1
+            except (KeyError, ValueError):
+                pass
+        return count
+
     async def _async_last_clip_for(self, doorbell_id: str) -> ClipInfo | None:
         downloaded = self._store_data.get("downloaded", {})
         all_files: list[dict] = [
@@ -524,10 +571,15 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             except (RingApiError, RingAuthError) as exc:
                 _LOGGER.warning("Failed to fetch history for %s: %s", db_name, exc)
 
+            now = datetime.now(timezone.utc)
+            week_cutoff  = now - timedelta(days=7)
+            month_cutoff = now - timedelta(days=30)
             result[db_id] = DoorbellData(
                 name=db_name,
                 last_clip=await self._async_last_clip_for(db_id),
                 clips_today=self._count_clips_today(db_id),
+                clips_this_week=self._count_clips_since(db_id, week_cutoff),
+                clips_this_month=self._count_clips_since(db_id, month_cutoff),
                 clips_total=sum(
                     1 for m in self._store_data.get("downloaded", {}).values()
                     if m.get("doorbell_id") == db_id
@@ -535,7 +587,11 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             )
 
         # Populate per-doorbell storage + kind breakdowns via a single dir scan.
-        storage = await self.hass.async_add_executor_job(self._scan_storage_stats)
+        # Also capture free space on the media partition.
+        storage, free_bytes = await self.hass.async_add_executor_job(
+            self._scan_storage_and_free
+        )
+        self._free_space_bytes = free_bytes
         for db_id, stats in storage.items():
             if db_id in result:
                 result[db_id].storage_bytes  = stats["bytes"]
@@ -562,12 +618,12 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         return result
 
 
-    def _scan_storage_stats(self) -> dict[str, dict]:
-        """Scan the download directory and return per-doorbell size/kind stats.
+    def _scan_storage_and_free(self) -> tuple[dict[str, dict], int]:
+        """Scan the download directory for per-doorbell stats and free space.
 
         Runs in a thread-pool executor — no async operations allowed here.
-        Returns a dict keyed by doorbell_id:
-          {"bytes": int, "motion": int, "doorbell": int, "live": int}
+        Returns (per_doorbell_stats, free_bytes) where per_doorbell_stats is
+        keyed by doorbell_id: {"bytes": int, "motion": int, "doorbell": int, "live": int}
         """
         downloaded = self._store_data.get("downloaded", {})
         file_to_db: dict[str, str] = {
@@ -598,7 +654,13 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                     stats[db_id]["live"] += 1
         except OSError:
             pass
-        return stats
+
+        try:
+            free_bytes = shutil.disk_usage(self._download_path).free
+        except OSError:
+            free_bytes = 0
+
+        return stats, free_bytes
 
 
 def _unlink_if_exists_path(path: Path) -> None:

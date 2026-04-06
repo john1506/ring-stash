@@ -35,13 +35,24 @@ async def async_setup_entry(
     for doorbell_id, data in coordinator.data.items():
         entities.append(RingLastClipSensor(coordinator, entry, doorbell_id, data.name))
         entities.append(RingClipsTodaySensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingClipsThisWeekSensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingClipsThisMonthSensor(coordinator, entry, doorbell_id, data.name))
         entities.append(RingTotalClipsSensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingMotionClipsSensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingDoorbellClipsSensor(coordinator, entry, doorbell_id, data.name))
+        entities.append(RingLiveClipsSensor(coordinator, entry, doorbell_id, data.name))
         entities.append(RingStorageSensor(coordinator, entry, doorbell_id, data.name))
 
     # Global sensors — span all doorbells
     entities.append(RingGlobalTotalClipsSensor(coordinator, entry))
     entities.append(RingGlobalStorageSensor(coordinator, entry))
     entities.append(RingGlobalClipsTodaySensor(coordinator, entry))
+    entities.append(RingGlobalClipsThisWeekSensor(coordinator, entry))
+    entities.append(RingGlobalClipsThisMonthSensor(coordinator, entry))
+    entities.append(RingOldestClipSensor(coordinator, entry))
+    entities.append(RingPendingDownloadsSensor(coordinator, entry))
+    entities.append(RingLockedClipsSensor(coordinator, entry))
+    entities.append(RingFreeSpaceSensor(coordinator, entry))
 
     async_add_entities(entities)
 
@@ -160,6 +171,42 @@ class RingClipsTodaySensor(_RingClipBase):
         return {"total_clips": data.clips_total}
 
 
+class RingClipsThisWeekSensor(_RingClipBase):
+    """Clips downloaded in the last 7 days for this doorbell."""
+
+    _attr_icon = "mdi:calendar-week"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_clips_this_week"
+        self._attr_name = f"{doorbell_name} Clips This Week"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_this_week if data else 0
+
+
+class RingClipsThisMonthSensor(_RingClipBase):
+    """Clips downloaded in the last 30 days for this doorbell."""
+
+    _attr_icon = "mdi:calendar-month"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_clips_this_month"
+        self._attr_name = f"{doorbell_name} Clips This Month"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_this_month if data else 0
+
+
 class RingTotalClipsSensor(_RingClipBase):
     """Total clips stored on disk for this doorbell, with a per-kind breakdown."""
 
@@ -187,6 +234,60 @@ class RingTotalClipsSensor(_RingClipBase):
             "doorbell": data.clips_doorbell,
             "live": data.clips_live,
         }
+
+
+class RingMotionClipsSensor(_RingClipBase):
+    """Total motion-triggered clips stored for this doorbell."""
+
+    _attr_icon = "mdi:motion-sensor"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_motion_clips"
+        self._attr_name = f"{doorbell_name} Motion Clips"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_motion if data else 0
+
+
+class RingDoorbellClipsSensor(_RingClipBase):
+    """Total doorbell-ring clips stored for this doorbell."""
+
+    _attr_icon = "mdi:doorbell"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_doorbell_clips"
+        self._attr_name = f"{doorbell_name} Doorbell Clips"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_doorbell if data else 0
+
+
+class RingLiveClipsSensor(_RingClipBase):
+    """Total live-view recordings stored for this doorbell."""
+
+    _attr_icon = "mdi:cctv"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator, entry, doorbell_id, doorbell_name) -> None:
+        super().__init__(coordinator, entry, doorbell_id, doorbell_name)
+        self._attr_unique_id = f"{DOMAIN}_{doorbell_id}_live_clips"
+        self._attr_name = f"{doorbell_name} Live Clips"
+
+    @property
+    def native_value(self) -> int:
+        data = self._doorbell_data
+        return data.clips_live if data else 0
 
 
 class RingStorageSensor(_RingClipBase):
@@ -298,3 +399,122 @@ class RingGlobalClipsTodaySensor(_RingGlobalBase):
             d.name: d.clips_today
             for d in self.coordinator.data.values()
         }
+
+
+class RingGlobalClipsThisWeekSensor(_RingGlobalBase):
+    """Total clips downloaded in the last 7 days across all doorbells."""
+
+    _attr_icon = "mdi:calendar-week"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_global_clips_this_week"
+        self._attr_name = "Ring Stash Clips This Week"
+
+    @property
+    def native_value(self) -> int:
+        if not self.coordinator.data:
+            return 0
+        return sum(d.clips_this_week for d in self.coordinator.data.values())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.coordinator.data:
+            return {}
+        return {d.name: d.clips_this_week for d in self.coordinator.data.values()}
+
+
+class RingGlobalClipsThisMonthSensor(_RingGlobalBase):
+    """Total clips downloaded in the last 30 days across all doorbells."""
+
+    _attr_icon = "mdi:calendar-month"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_global_clips_this_month"
+        self._attr_name = "Ring Stash Clips This Month"
+
+    @property
+    def native_value(self) -> int:
+        if not self.coordinator.data:
+            return 0
+        return sum(d.clips_this_month for d in self.coordinator.data.values())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.coordinator.data:
+            return {}
+        return {d.name: d.clips_this_month for d in self.coordinator.data.values()}
+
+
+class RingOldestClipSensor(_RingGlobalBase):
+    """Timestamp of the oldest clip in the archive."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:clock-start"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_oldest_clip"
+        self._attr_name = "Ring Stash Oldest Clip"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.oldest_clip_date()
+
+
+class RingPendingDownloadsSensor(_RingGlobalBase):
+    """Clips queued waiting for their download URL to become ready."""
+
+    _attr_icon = "mdi:cloud-download-outline"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_pending_downloads"
+        self._attr_name = "Ring Stash Pending Downloads"
+
+    @property
+    def native_value(self) -> int:
+        return self.coordinator.pending_count
+
+
+class RingLockedClipsSensor(_RingGlobalBase):
+    """Number of clips locked from automatic retention cleanup."""
+
+    _attr_icon = "mdi:lock-outline"
+    _attr_native_unit_of_measurement = "clips"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_locked_clips"
+        self._attr_name = "Ring Stash Locked Clips"
+
+    @property
+    def native_value(self) -> int:
+        return self.coordinator.locked_count
+
+
+class RingFreeSpaceSensor(_RingGlobalBase):
+    """Free disk space on the media partition where clips are stored."""
+
+    _attr_device_class = SensorDeviceClass.DATA_SIZE
+    _attr_native_unit_of_measurement = UnitOfInformation.GIGABYTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:harddisk"
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_free_space_gb"
+        self._attr_name = "Ring Stash Free Space"
+
+    @property
+    def native_value(self) -> float:
+        return round(self.coordinator.free_space_bytes / (1024 ** 3), 2)
