@@ -86,7 +86,11 @@ sys.modules["custom_components.ring_stash"].__path__ = [str(_ROOT / "custom_comp
 sys.modules["custom_components.ring_stash.api"] = api_mod
 sys.modules["custom_components.ring_stash.const"] = const_mod
 
-from custom_components.ring_stash.coordinator import RingClipCoordinator  # noqa: E402
+from custom_components.ring_stash.coordinator import (  # noqa: E402
+    RingClipCoordinator,
+    _event_has_recoverable_clip,
+    _extract_ai_description,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +433,51 @@ class TestStatsAfterDeletion(unittest.TestCase):
         self.assertEqual(c.pending_count, 2)
         del c._pending["id1"]
         self.assertEqual(c.pending_count, 1)
+
+
+class TestEventRecoverability(unittest.TestCase):
+    def test_ready_clip_is_recoverable(self):
+        self.assertTrue(
+            _event_has_recoverable_clip({"recording": {"status": "ready"}})
+        )
+
+    def test_uploading_clip_is_only_recoverable_in_fast_mode(self):
+        event = {"recording": {"status": "uploading"}}
+        self.assertTrue(_event_has_recoverable_clip(event))
+        self.assertFalse(_event_has_recoverable_clip(event, ready_only=True))
+
+    def test_missing_recording_is_not_recoverable(self):
+        self.assertFalse(_event_has_recoverable_clip({}))
+
+
+class TestExtractAiDescription(unittest.TestCase):
+    def test_prefers_natural_language_description(self):
+        self.assertEqual(
+            _extract_ai_description({"description": "A person is at the door."}),
+            "A person is at the door.",
+        )
+
+    def test_uses_detection_type_list(self):
+        self.assertEqual(
+            _extract_ai_description({"detection_type": ["person", "package"]}),
+            "Person, Package",
+        )
+
+    def test_uses_legacy_cv_properties(self):
+        self.assertEqual(
+            _extract_ai_description(
+                {
+                    "cv_properties": {
+                        "personDetected": True,
+                        "packageDetected": True,
+                    }
+                }
+            ),
+            "Person, Package",
+        )
+
+    def test_returns_empty_string_when_no_ai_fields_exist(self):
+        self.assertEqual(_extract_ai_description({"cv_properties": {}}), "")
 
 
 if __name__ == "__main__":

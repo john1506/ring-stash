@@ -15,10 +15,13 @@ Ring Stash is a Home Assistant custom integration that automatically downloads a
 
 - 📥 **Auto-download** — clips appear locally within seconds of Ring processing them
 - 🔄 **Smart retry** — polls until the clip URL is ready (up to 3 minutes), never drops a recording
-- 🗂️ **Sidebar viewer** — browse clips in a grid, search AI descriptions and notes, filter by camera or event type, play inline
-- 🗑️ **Retention policy** — auto-delete clips older than your configured limit
+- 🧭 **Paged history recovery** — recovers older missed clips instead of stopping at the most recent 20 events
+- 🗂️ **Sidebar viewer** — browse clips in a grid, search AI descriptions and notes, filter by date, camera, or event type, and play inline
+- 🏷️ **Labels and locks** — add your own notes to clips and protect important recordings from retention cleanup
+- 🗑️ **Retention policy** — auto-delete clips older than your configured limit while preserving locked files
 - 🔒 **No extra credentials** — reuses your existing Ring integration auth token
-- 📊 **Sensor entities** — last clip timestamp, clips today count per doorbell
+- 📊 **Sensor entities** — per-doorbell and global archive, storage, and health sensors
+- 🧪 **Diagnostics support** — download a redacted diagnostics bundle from the integration page for troubleshooting
 - ⚡ **Rate-limit safe** — polls Ring API at ≤3 req/min, well under Ring's 12 req/min limit
 
 ## Requirements
@@ -50,14 +53,47 @@ Copy `custom_components/ring_stash/` into your HA `config/custom_components/` di
 
 ## Sidebar Panel
 
-The **Ring Stash** panel (📹 in the sidebar) shows a filterable grid of all downloaded clips. Click any clip to play it inline. Use search, camera, and event type filters to find what you're looking for. Navigate between clips with arrow keys or the on-screen buttons.
+The **Ring Stash** panel (📹 in the sidebar) shows a filterable grid of all downloaded clips. You can:
+
+- Search filenames, labels, and stored AI descriptions
+- Filter by date range and clip type
+- Play clips inline
+- Lock clips against retention cleanup
+- Add your own labels for later search
+
+Navigate between clips with arrow keys or the on-screen buttons.
 
 ## Entities
 
-| Entity | Description |
+Exact entity IDs depend on Home Assistant's slugging, but the integration creates the following sensor groups.
+
+### Per-doorbell sensors
+
+| Sensor | Description |
 |---|---|
-| `sensor.{doorbell}_last_clip` | Timestamp of the most recently downloaded clip |
-| `sensor.{doorbell}_clips_today` | Number of clips downloaded today |
+| Last Clip | Timestamp of the most recently recorded clip in the local archive |
+| Clips Today | Number of clips recorded today |
+| Clips This Week | Number of clips recorded in the last 7 days |
+| Clips This Month | Number of clips recorded in the last 30 days |
+| Total Clips | Total archived clips for that doorbell |
+| Motion Clips | Total archived motion clips |
+| Doorbell Clips | Total archived ring events |
+| Live Clips | Total archived live-view recordings |
+| Storage Used | Disk space used by that doorbell's clips |
+
+### Global sensors
+
+| Sensor | Description |
+|---|---|
+| Ring Stash Total Clips | Total archived clips across all doorbells |
+| Ring Stash Total Storage | Total disk space used across all doorbells |
+| Ring Stash Clips Today | Total clips recorded today |
+| Ring Stash Clips This Week | Total clips recorded in the last 7 days |
+| Ring Stash Clips This Month | Total clips recorded in the last 30 days |
+| Ring Stash Oldest Clip | Oldest recorded clip still in the archive |
+| Ring Stash Pending Downloads | Clips waiting for Ring's download URL to become ready |
+| Ring Stash Locked Clips | Clips protected from retention cleanup |
+| Ring Stash Free Space | Free space on the media volume |
 
 ## Configuration options
 
@@ -66,6 +102,17 @@ The **Ring Stash** panel (📹 in the sidebar) shows a filterable grid of all do
 | Download path | `/media/ring_clips` | Where clips are saved (must be inside `/media`) |
 | Retention days | 30 | Clips older than this are automatically deleted |
 | Poll interval | 5 min | How often to check for new clips |
+| Panel title | `Ring Stash` | Sidebar title for the built-in viewer panel |
+
+## Notes
+
+- "Clips Today", "This Week", and "This Month" are based on the Ring event timestamp, not when the file happened to be recovered later.
+- Ring Stash only keeps events that still have a downloadable recording. Metadata-only entries are skipped.
+
+## Troubleshooting
+
+- Use **Download diagnostics** from the integration menu in Home Assistant to capture a redacted support bundle.
+- If you change the download path or panel title, reloading the integration is enough; a full Home Assistant restart is not required.
 
 ## Contributing
 
