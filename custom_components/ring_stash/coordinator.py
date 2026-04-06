@@ -209,16 +209,33 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         """Free bytes on the media partition (updated each coordinator cycle)."""
         return self._free_space_bytes
 
+    @staticmethod
+    def _parse_stored_datetime(meta: dict, *keys: str) -> datetime | None:
+        """Return the first valid timestamp found under the given metadata keys."""
+        for key in keys:
+            raw = meta.get(key)
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        return None
+
+    def _stored_recorded_at(self, meta: dict) -> datetime | None:
+        """Return the clip event time, falling back for older store entries."""
+        return self._parse_stored_datetime(meta, "recorded_at", "downloaded_at")
+
     def oldest_clip_date(self) -> datetime | None:
-        """Timestamp of the oldest downloaded clip, or None if no clips stored."""
+        """Timestamp of the oldest recorded clip still stored on disk."""
         oldest: datetime | None = None
         for meta in self._store_data.get("downloaded", {}).values():
-            try:
-                dt = datetime.fromisoformat(meta["downloaded_at"])
-                if oldest is None or dt < oldest:
-                    oldest = dt
-            except (KeyError, ValueError):
-                pass
+            dt = self._stored_recorded_at(meta)
+            if dt is not None and (oldest is None or dt < oldest):
+                oldest = dt
         return oldest
 
     def _clip_filename(self, doorbell_name: str, recorded_at: datetime, kind: str) -> str:
@@ -316,6 +333,9 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 self._store_data.setdefault("downloaded", {})[ding_id] = {
                     "filename": clip.filename,
                     "doorbell_id": doorbell_id,
+                    "doorbell_name": doorbell_name,
+                    "kind": clip.kind,
+                    "recorded_at": clip.recorded_at.isoformat(),
                     "downloaded_at": datetime.now(timezone.utc).isoformat(),
                     "ai_description": ai_description,
                 }
@@ -436,6 +456,9 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
                 self._store_data.setdefault("downloaded", {})[ding_id] = {
                     "filename": clip.filename,
                     "doorbell_id": pending.doorbell_id,
+                    "doorbell_name": pending.doorbell_name,
+                    "kind": pending.kind,
+                    "recorded_at": pending.recorded_at.isoformat(),
                     "downloaded_at": datetime.now(timezone.utc).isoformat(),
                     "ai_description": pending.ai_description,
                 }
@@ -482,35 +505,34 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         for meta in self._store_data.get("downloaded", {}).values():
             if meta.get("doorbell_id") != doorbell_id:
                 continue
-            try:
-                dt = datetime.fromisoformat(meta["downloaded_at"])
-                if dt.date() == today:
-                    count += 1
-            except (KeyError, ValueError):
-                pass
+            dt = self._stored_recorded_at(meta)
+            if dt is not None and dt.date() == today:
+                count += 1
         return count
 
     def _count_clips_since(self, doorbell_id: str, cutoff: datetime) -> int:
-        """Count clips for a doorbell downloaded on or after ``cutoff``."""
+        """Count clips for a doorbell recorded on or after ``cutoff``."""
         count = 0
         for meta in self._store_data.get("downloaded", {}).values():
             if meta.get("doorbell_id") != doorbell_id:
                 continue
-            try:
-                if datetime.fromisoformat(meta["downloaded_at"]) >= cutoff:
-                    count += 1
-            except (KeyError, ValueError):
-                pass
+            dt = self._stored_recorded_at(meta)
+            if dt is not None and dt >= cutoff:
+                count += 1
         return count
 
-    async def _async_last_clip_for(self, doorbell_id: str) -> ClipInfo | None:
+    async def _async_last_clip_for(self, doorbell_id: str, doorbell_name: str) -> ClipInfo | None:
         downloaded = self._store_data.get("downloaded", {})
         all_files: list[dict] = [
             m for m in downloaded.values() if m.get("doorbell_id") == doorbell_id
         ]
         if not all_files:
             return None
-        latest = max(all_files, key=lambda m: m.get("downloaded_at", ""), default=None)
+        latest = max(
+            all_files,
+            key=lambda m: self._stored_recorded_at(m) or datetime.min.replace(tzinfo=timezone.utc),
+            default=None,
+        )
         if not latest:
             return None
         filename = latest.get("filename", "")
@@ -518,21 +540,19 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             return None
         path = self._download_path / filename
         size = await self.hass.async_add_executor_job(_stat_size, path)
-        # Reconstruct a minimal ClipInfo from stored metadata
-        parts = filename.rsplit("_", 1)
-        kind_label = parts[-1].replace(".mp4", "") if len(parts) > 1 else "unknown"
-        kind = {v: k for k, v in _KIND_LABEL.items()}.get(kind_label, kind_label)
-        try:
-            dt = datetime.fromisoformat(latest["downloaded_at"])
-        except (KeyError, ValueError):
-            dt = datetime.now(timezone.utc)
+        kind = latest.get("kind", "")
+        if not kind:
+            parts = filename.rsplit("_", 1)
+            kind_label = parts[-1].replace(".mp4", "") if len(parts) > 1 else "unknown"
+            kind = {v: k for k, v in _KIND_LABEL.items()}.get(kind_label, kind_label)
+        dt = self._stored_recorded_at(latest) or datetime.now(timezone.utc)
         ding_id = next(
             (k for k, v in downloaded.items() if v is latest), ""
         )
         return ClipInfo(
             ding_id=ding_id,
             doorbell_id=doorbell_id,
-            doorbell_name=latest.get("doorbell_name", ""),
+            doorbell_name=latest.get("doorbell_name", doorbell_name),
             kind=kind,
             recorded_at=dt,
             filename=filename,
@@ -576,7 +596,7 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             month_cutoff = now - timedelta(days=30)
             result[db_id] = DoorbellData(
                 name=db_name,
-                last_clip=await self._async_last_clip_for(db_id),
+                last_clip=await self._async_last_clip_for(db_id, db_name),
                 clips_today=self._count_clips_today(db_id),
                 clips_this_week=self._count_clips_since(db_id, week_cutoff),
                 clips_this_month=self._count_clips_since(db_id, month_cutoff),

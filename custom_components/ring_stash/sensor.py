@@ -31,30 +31,72 @@ async def async_setup_entry(
     # Wait for first data load so we know which doorbells exist
     await coordinator.async_config_entry_first_refresh()
 
-    entities: list[SensorEntity] = []
+    known_doorbells: set[str] = set()
+    entities = _build_global_entities(coordinator, entry)
     for doorbell_id, data in coordinator.data.items():
-        entities.append(RingLastClipSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingClipsTodaySensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingClipsThisWeekSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingClipsThisMonthSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingTotalClipsSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingMotionClipsSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingDoorbellClipsSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingLiveClipsSensor(coordinator, entry, doorbell_id, data.name))
-        entities.append(RingStorageSensor(coordinator, entry, doorbell_id, data.name))
-
-    # Global sensors — span all doorbells
-    entities.append(RingGlobalTotalClipsSensor(coordinator, entry))
-    entities.append(RingGlobalStorageSensor(coordinator, entry))
-    entities.append(RingGlobalClipsTodaySensor(coordinator, entry))
-    entities.append(RingGlobalClipsThisWeekSensor(coordinator, entry))
-    entities.append(RingGlobalClipsThisMonthSensor(coordinator, entry))
-    entities.append(RingOldestClipSensor(coordinator, entry))
-    entities.append(RingPendingDownloadsSensor(coordinator, entry))
-    entities.append(RingLockedClipsSensor(coordinator, entry))
-    entities.append(RingFreeSpaceSensor(coordinator, entry))
-
+        entities.extend(_build_doorbell_entities(coordinator, entry, doorbell_id, data.name))
+        known_doorbells.add(doorbell_id)
     async_add_entities(entities)
+
+    def _async_add_new_doorbells() -> None:
+        if not coordinator.data:
+            return
+
+        new_entities: list[SensorEntity] = []
+        for doorbell_id, data in coordinator.data.items():
+            if doorbell_id in known_doorbells:
+                continue
+            known_doorbells.add(doorbell_id)
+            new_entities.extend(
+                _build_doorbell_entities(coordinator, entry, doorbell_id, data.name)
+            )
+
+        if new_entities:
+            _LOGGER.info(
+                "Adding Ring Stash sensors for %d newly discovered doorbell(s)",
+                len(new_entities) // 9,
+            )
+            async_add_entities(new_entities)
+
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_doorbells))
+
+
+def _build_doorbell_entities(
+    coordinator: RingClipCoordinator,
+    entry: ConfigEntry,
+    doorbell_id: str,
+    doorbell_name: str,
+) -> list[SensorEntity]:
+    """Build the full sensor set for one doorbell."""
+    return [
+        RingLastClipSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingClipsTodaySensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingClipsThisWeekSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingClipsThisMonthSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingTotalClipsSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingMotionClipsSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingDoorbellClipsSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingLiveClipsSensor(coordinator, entry, doorbell_id, doorbell_name),
+        RingStorageSensor(coordinator, entry, doorbell_id, doorbell_name),
+    ]
+
+
+def _build_global_entities(
+    coordinator: RingClipCoordinator,
+    entry: ConfigEntry,
+) -> list[SensorEntity]:
+    """Build the global sensor set shared across all doorbells."""
+    return [
+        RingGlobalTotalClipsSensor(coordinator, entry),
+        RingGlobalStorageSensor(coordinator, entry),
+        RingGlobalClipsTodaySensor(coordinator, entry),
+        RingGlobalClipsThisWeekSensor(coordinator, entry),
+        RingGlobalClipsThisMonthSensor(coordinator, entry),
+        RingOldestClipSensor(coordinator, entry),
+        RingPendingDownloadsSensor(coordinator, entry),
+        RingLockedClipsSensor(coordinator, entry),
+        RingFreeSpaceSensor(coordinator, entry),
+    ]
 
 
 # ── Shared base ───────────────────────────────────────────────────────────────
@@ -147,7 +189,7 @@ class RingLastClipSensor(_RingClipBase):
 
 
 class RingClipsTodaySensor(_RingClipBase):
-    """Number of clips downloaded today for this doorbell."""
+    """Number of clips recorded today for this doorbell."""
 
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "clips"
@@ -172,7 +214,7 @@ class RingClipsTodaySensor(_RingClipBase):
 
 
 class RingClipsThisWeekSensor(_RingClipBase):
-    """Clips downloaded in the last 7 days for this doorbell."""
+    """Clips recorded in the last 7 days for this doorbell."""
 
     _attr_icon = "mdi:calendar-week"
     _attr_native_unit_of_measurement = "clips"
@@ -190,7 +232,7 @@ class RingClipsThisWeekSensor(_RingClipBase):
 
 
 class RingClipsThisMonthSensor(_RingClipBase):
-    """Clips downloaded in the last 30 days for this doorbell."""
+    """Clips recorded in the last 30 days for this doorbell."""
 
     _attr_icon = "mdi:calendar-month"
     _attr_native_unit_of_measurement = "clips"
@@ -374,7 +416,7 @@ class RingGlobalStorageSensor(_RingGlobalBase):
 
 
 class RingGlobalClipsTodaySensor(_RingGlobalBase):
-    """Total clips downloaded today across all doorbells."""
+    """Total clips recorded today across all doorbells."""
 
     _attr_icon = "mdi:calendar-today"
     _attr_native_unit_of_measurement = "clips"
@@ -402,7 +444,7 @@ class RingGlobalClipsTodaySensor(_RingGlobalBase):
 
 
 class RingGlobalClipsThisWeekSensor(_RingGlobalBase):
-    """Total clips downloaded in the last 7 days across all doorbells."""
+    """Total clips recorded in the last 7 days across all doorbells."""
 
     _attr_icon = "mdi:calendar-week"
     _attr_native_unit_of_measurement = "clips"
@@ -427,7 +469,7 @@ class RingGlobalClipsThisWeekSensor(_RingGlobalBase):
 
 
 class RingGlobalClipsThisMonthSensor(_RingGlobalBase):
-    """Total clips downloaded in the last 30 days across all doorbells."""
+    """Total clips recorded in the last 30 days across all doorbells."""
 
     _attr_icon = "mdi:calendar-month"
     _attr_native_unit_of_measurement = "clips"

@@ -10,15 +10,18 @@ Provides:
 """
 from __future__ import annotations
 
+import json
 import logging
-import os
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
-from homeassistant.components.frontend import async_register_built_in_panel
+from homeassistant.components.frontend import (
+    async_register_built_in_panel,
+    async_remove_panel,
+)
 
 from .const import (
     CONF_DOWNLOAD_PATH,
@@ -38,13 +41,15 @@ from .coordinator import RingClipCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-FRONTEND_URL = "/ring_stash_panel"
 FRONTEND_JS = Path(__file__).parent / "frontend" / "ring-stash-viewer.js"
+FRONTEND_VERSION = json.loads(
+    (Path(__file__).parent / "manifest.json").read_text(encoding="utf-8")
+)["version"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Ring Stash from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    domain_data = hass.data.setdefault(DOMAIN, {})
 
     # Resolve the Ring config entry referenced at setup time
     ring_entry_id = entry.data.get(CONF_RING_ENTRY_ID)
@@ -71,58 +76,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         poll_interval=poll_interval,
     )
 
-    hass.data[DOMAIN][entry.entry_id] = {
+    domain_data[entry.entry_id] = {
         DATA_COORDINATOR: coordinator,
     }
+    domain_data["_active_entry_id"] = entry.entry_id
+    domain_data["_download_path"] = Path(download_path)
 
     # Register sensor (and any future) platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register the REST API endpoints for the frontend panel
-    hass.http.register_view(RingClipListView(download_path, entry.entry_id))
-    hass.http.register_view(RingClipFilenamesView(download_path))
-    hass.http.register_view(RingClipLockView(entry.entry_id))
-    hass.http.register_view(RingClipLabelView(entry.entry_id))
+    # Register the REST API endpoints for the frontend panel once; the views
+    # resolve the current config dynamically from hass.data on each request.
+    if not domain_data.get("_views_registered"):
+        hass.http.register_view(RingClipListView())
+        hass.http.register_view(RingClipFilenamesView())
+        hass.http.register_view(RingClipLockView())
+        hass.http.register_view(RingClipLabelView())
+        hass.http.register_view(RingClipMediaView())
+        domain_data["_views_registered"] = True
 
-    # Register the sidebar panel — guard against a second config entry attempting
-    # the same registration (raises ValueError on duplicate frontend_url_path).
-    if not hass.data[DOMAIN].get("_panel_registered"):
-        async_register_built_in_panel(
-            hass,
-            component_name="custom",
-            sidebar_title=panel_title,
-            sidebar_icon="mdi:doorbell-video",
-            frontend_url_path="ring-stash",
-            config={
-                "_panel_custom": {
-                    "name": "ring-stash-viewer",
-                    "js_url": "/ring_stash_frontend/ring-stash-viewer.js?v=1.0.1",
-                    "embed_iframe": False,
-                    "trust_external": False,
-                },
-                "panel_title": panel_title,
+    # Update the sidebar panel config on every reload so title and frontend
+    # metadata follow the latest options.
+    async_register_built_in_panel(
+        hass,
+        component_name="custom",
+        sidebar_title=panel_title,
+        sidebar_icon="mdi:doorbell-video",
+        frontend_url_path="ring-stash",
+        config={
+            "_panel_custom": {
+                "name": "ring-stash-viewer",
+                "js_url": f"/ring_stash_frontend/ring-stash-viewer.js?v={FRONTEND_VERSION}",
+                "embed_iframe": False,
+                "trust_external": False,
             },
-            require_admin=False,
-        )
-        hass.data[DOMAIN]["_panel_registered"] = True
+            "panel_title": panel_title,
+        },
+        require_admin=False,
+        update=True,
+    )
 
-    # Serve the frontend JS and the downloaded clips (no-auth static paths).
-    # aiohttp raises ValueError if the same URL prefix is registered twice, so guard
-    # against that when the config entry reloads (e.g. after an options change).
-    if not hass.data[DOMAIN].get("_static_registered"):
+    # Serve the frontend JS once. Clip media is served by RingClipMediaView so
+    # the active download path can change without requiring a full restart.
+    if not domain_data.get("_frontend_static_registered"):
         await hass.http.async_register_static_paths([
             StaticPathConfig(
                 "/ring_stash_frontend",
                 str(FRONTEND_JS.parent),
                 cache_headers=True,
             ),
-            StaticPathConfig(
-                "/ring_stash_media",
-                download_path,
-                cache_headers=False,
-            ),
         ])
-        hass.data[DOMAIN]["_static_registered"] = True
+        domain_data["_frontend_static_registered"] = True
 
     # Listen for options updates
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -134,7 +138,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Ring Stash config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        domain_data = hass.data.get(DOMAIN, {})
+        domain_data.pop(entry.entry_id, None)
+
+        remaining_entry_ids = [
+            key for key, value in domain_data.items()
+            if not key.startswith("_") and isinstance(value, dict)
+        ]
+        if domain_data.get("_active_entry_id") == entry.entry_id:
+            next_entry_id = remaining_entry_ids[0] if remaining_entry_ids else None
+            if next_entry_id is None:
+                domain_data.pop("_active_entry_id", None)
+                domain_data.pop("_download_path", None)
+            else:
+                domain_data["_active_entry_id"] = next_entry_id
+                next_coordinator = domain_data[next_entry_id].get(DATA_COORDINATOR)
+                if next_coordinator is not None:
+                    domain_data["_download_path"] = next_coordinator._download_path
+
+        if not remaining_entry_ids:
+            async_remove_panel(hass, "ring-stash", warn_if_unknown=False)
     return unload_ok
 
 
@@ -145,11 +168,35 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_coordinator(hass, entry_id: str):
-    """Return the RingClipCoordinator for the given entry_id, or None."""
-    domain_data = hass.data.get(DOMAIN, {})
+def _get_domain_data(hass) -> dict:
+    """Return the Ring Stash domain data dict."""
+    return hass.data.get(DOMAIN, {})
+
+
+def _get_active_entry_id(hass) -> str | None:
+    """Return the active Ring Stash config-entry id, if any."""
+    return _get_domain_data(hass).get("_active_entry_id")
+
+
+def _get_download_path(hass) -> Path:
+    """Return the current clip download path for the active config entry."""
+    return Path(_get_domain_data(hass).get("_download_path", DEFAULT_DOWNLOAD_PATH))
+
+
+def _get_coordinator(hass, entry_id: str | None = None):
+    """Return the RingClipCoordinator for the given or active entry_id."""
+    if entry_id is None:
+        entry_id = _get_active_entry_id(hass)
+    if entry_id is None:
+        return None
+    domain_data = _get_domain_data(hass)
     entry_data  = domain_data.get(entry_id, {})
     return entry_data.get(DATA_COORDINATOR)
+
+
+def _is_safe_filename(filename: str) -> bool:
+    """Return True if the value is a plain basename with no path separators."""
+    return bool(filename) and "/" not in filename and "\\" not in filename and filename == Path(filename).name
 
 
 def _normalize_search_text(value: str) -> str:
@@ -183,10 +230,6 @@ class RingClipListView(HomeAssistantView):
     name = "api:ring_stash:clips"
     requires_auth = True  # HA enforces Bearer token validation automatically
 
-    def __init__(self, download_path: str, entry_id: str) -> None:
-        self._download_path = Path(download_path)
-        self._entry_id = entry_id
-
     async def get(self, request):
         from aiohttp.web import Response
         import json
@@ -202,14 +245,16 @@ class RingClipListView(HomeAssistantView):
         search    = q.get("search",    "").strip()
 
         hass        = request.app["hass"]
-        coordinator = _get_coordinator(hass, self._entry_id)
+        coordinator = _get_coordinator(hass)
+        download_path = _get_download_path(hass)
         result = await hass.async_add_executor_job(
-            self._scan_clips, coordinator, limit, offset, from_date, to_date, search
+            self._scan_clips, download_path, coordinator, limit, offset, from_date, to_date, search
         )
         return Response(body=json.dumps(result), content_type="application/json")
 
     def _scan_clips(
         self,
+        download_path: Path,
         coordinator,
         limit: int,
         offset: int,
@@ -226,12 +271,12 @@ class RingClipListView(HomeAssistantView):
 
         Only filename-derived metadata is returned — no full paths, no tokens.
         """
-        if not self._download_path.exists():
+        if not download_path.exists():
             return {"total": 0, "clips": []}
 
         # First pass: collect and filter without stat() — stat only the page we need
         matched: list[tuple] = []
-        for f in sorted(self._download_path.glob("*.mp4"), reverse=True):
+        for f in sorted(download_path.glob("*.mp4"), reverse=True):
             name       = f.stem
             date_parts = name.split("_")
             file_date = file_time = doorbell = ""
@@ -304,9 +349,6 @@ class RingClipLockView(HomeAssistantView):
     name = "api:ring_stash:lock"
     requires_auth = True
 
-    def __init__(self, entry_id: str) -> None:
-        self._entry_id = entry_id
-
     async def post(self, request):
         from aiohttp.web import Response
         import json
@@ -320,11 +362,11 @@ class RingClipLockView(HomeAssistantView):
         locked   = bool(body.get("locked", False))
 
         # Reject anything that isn't a plain filename (no path separators)
-        if not filename or "/" in filename or "\\" in filename or filename != Path(filename).name:
+        if not _is_safe_filename(filename):
             return Response(status=400, text="Invalid filename")
 
         hass        = request.app["hass"]
-        coordinator = _get_coordinator(hass, self._entry_id)
+        coordinator = _get_coordinator(hass)
         if coordinator is None:
             return Response(status=503, text="Coordinator not available")
 
@@ -348,21 +390,18 @@ class RingClipFilenamesView(HomeAssistantView):
     name = "api:ring_stash:filenames"
     requires_auth = True
 
-    def __init__(self, download_path: str) -> None:
-        self._download_path = Path(download_path)
-
     async def get(self, request):
         from aiohttp.web import Response
         import json
 
         hass      = request.app["hass"]
-        filenames = await hass.async_add_executor_job(self._list_filenames)
+        filenames = await hass.async_add_executor_job(self._list_filenames, _get_download_path(hass))
         return Response(body=json.dumps({"filenames": filenames}), content_type="application/json")
 
-    def _list_filenames(self) -> list[str]:
-        if not self._download_path.exists():
+    def _list_filenames(self, download_path: Path) -> list[str]:
+        if not download_path.exists():
             return []
-        return [f.name for f in self._download_path.glob("*.mp4")]
+        return [f.name for f in download_path.glob("*.mp4")]
 
 
 class RingClipLabelView(HomeAssistantView):
@@ -379,9 +418,6 @@ class RingClipLabelView(HomeAssistantView):
     name = "api:ring_stash:label"
     requires_auth = True
 
-    def __init__(self, entry_id: str) -> None:
-        self._entry_id = entry_id
-
     async def post(self, request):
         from aiohttp.web import Response
         import json
@@ -395,11 +431,11 @@ class RingClipLabelView(HomeAssistantView):
         label    = str(body.get("label", "")).strip()
 
         # Reject anything that isn't a plain filename (no path separators)
-        if not filename or "/" in filename or "\\" in filename or filename != Path(filename).name:
+        if not _is_safe_filename(filename):
             return Response(status=400, text="Invalid filename")
 
         hass        = request.app["hass"]
-        coordinator = _get_coordinator(hass, self._entry_id)
+        coordinator = _get_coordinator(hass)
         if coordinator is None:
             return Response(status=503, text="Coordinator not available")
 
@@ -408,3 +444,29 @@ class RingClipLabelView(HomeAssistantView):
             body=json.dumps({"filename": filename, "label": label}),
             content_type="application/json",
         )
+
+
+class RingClipMediaView(HomeAssistantView):
+    """
+    GET /ring_stash_media/{filename}
+
+    Serves clip files from the currently configured download directory.
+    The route is intentionally no-auth to match the previous static-path
+    behavior used by the in-app video and thumbnail elements.
+    """
+
+    url = "/ring_stash_media/{filename}"
+    name = "api:ring_stash:media"
+    requires_auth = False
+
+    async def get(self, request, filename):
+        from aiohttp.web import FileResponse, Response
+
+        if not _is_safe_filename(filename):
+            return Response(status=400, text="Invalid filename")
+
+        path = _get_download_path(request.app["hass"]) / filename
+        exists = await request.app["hass"].async_add_executor_job(path.exists)
+        if not exists:
+            return Response(status=404, text="Not found")
+        return FileResponse(path)

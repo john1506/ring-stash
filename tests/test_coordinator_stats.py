@@ -17,7 +17,7 @@ import types
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
 # Minimal stubs so coordinator.py can be imported without a full HA install
@@ -149,6 +149,17 @@ class TestCountClipsToday(unittest.TestCase):
         }}
         self.assertEqual(c._count_clips_today("db1"), 0)
 
+    def test_recorded_at_takes_priority_over_downloaded_at(self):
+        c = _make_coordinator()
+        c._store_data = {"downloaded": {
+            "a": {
+                "doorbell_id": "db1",
+                "recorded_at": _ts(2),
+                "downloaded_at": _ts(0),
+            },
+        }}
+        self.assertEqual(c._count_clips_today("db1"), 0)
+
 
 class TestCountClipsSince(unittest.TestCase):
     def test_within_window(self):
@@ -178,6 +189,18 @@ class TestCountClipsSince(unittest.TestCase):
         cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         self.assertEqual(c._count_clips_since("db1", cutoff), 1)
 
+    def test_recorded_at_takes_priority_over_downloaded_at(self):
+        c = _make_coordinator()
+        c._store_data = {"downloaded": {
+            "a": {
+                "doorbell_id": "db1",
+                "recorded_at": _ts(15),
+                "downloaded_at": _ts(1),
+            },
+        }}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        self.assertEqual(c._count_clips_since("db1", cutoff), 0)
+
 
 class TestOldestClipDate(unittest.TestCase):
     def test_no_clips(self):
@@ -204,6 +227,58 @@ class TestOldestClipDate(unittest.TestCase):
             "b": {"doorbell_id": "db1", "downloaded_at": _ts(3)},
         }}
         self.assertIsNotNone(c.oldest_clip_date())
+
+    def test_recorded_at_takes_priority_over_downloaded_at(self):
+        c = _make_coordinator()
+        c._store_data = {"downloaded": {
+            "a": {"doorbell_id": "db1", "recorded_at": _ts(20), "downloaded_at": _ts(1)},
+            "b": {"doorbell_id": "db1", "downloaded_at": _ts(3)},
+        }}
+        result = c.oldest_clip_date()
+        self.assertIsNotNone(result)
+        expected = datetime.now(timezone.utc) - timedelta(days=20)
+        self.assertLess(abs((result - expected).total_seconds()), 5)
+
+
+class TestLastClipFor(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil as _shutil
+        _shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    async def test_uses_recorded_at_and_stored_metadata(self):
+        c = _make_coordinator(self._tmpdir)
+        c.hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
+        latest_file = Path(self._tmpdir) / "front_door_2025-01-02_00-00-00_Doorbell.mp4"
+        latest_file.write_bytes(b"x" * 256)
+        c._store_data = {"downloaded": {
+            "old": {
+                "doorbell_id": "db1",
+                "filename": "front_door_2025-01-01_00-00-00_Motion.mp4",
+                "doorbell_name": "Front Door",
+                "kind": "motion",
+                "recorded_at": _ts(10),
+                "downloaded_at": _ts(0),
+            },
+            "new": {
+                "doorbell_id": "db1",
+                "filename": latest_file.name,
+                "doorbell_name": "Front Door",
+                "kind": "ding",
+                "recorded_at": _ts(1),
+                "downloaded_at": _ts(0),
+            },
+        }}
+
+        clip = await c._async_last_clip_for("db1", "Fallback Doorbell")
+
+        self.assertIsNotNone(clip)
+        self.assertEqual(clip.filename, latest_file.name)
+        self.assertEqual(clip.doorbell_name, "Front Door")
+        self.assertEqual(clip.kind, "ding")
+        self.assertEqual(clip.size_bytes, 256)
 
 
 class TestPendingAndLockedCount(unittest.TestCase):
