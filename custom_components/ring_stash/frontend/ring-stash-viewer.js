@@ -27,6 +27,13 @@ function _esc(s) {
   return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+function _formatBytes(bytes) {
+  if (bytes >= 1_073_741_824) return (bytes / 1_073_741_824).toFixed(1) + " GB";
+  if (bytes >= 1_048_576)     return (bytes / 1_048_576).toFixed(1) + " MB";
+  if (bytes >= 1024)          return (bytes / 1024).toFixed(0) + " KB";
+  return bytes + " B";
+}
+
 /* ── Styles ──────────────────────────────────────────────────────────────── */
 const CSS = `
   :host {
@@ -42,10 +49,21 @@ const CSS = `
     background: var(--card-background-color, #1e2130);
     border-bottom: 1px solid rgba(255,255,255,0.07);
   }
+  .back-btn {
+    background: none; border: none; color: var(--primary-text-color, #e2e4f0);
+    font-size: 1.4rem; cursor: pointer; padding: 0 4px; line-height: 1;
+    display: flex; align-items: center; flex-shrink: 0;
+    opacity: 0.7; transition: opacity 0.15s;
+  }
+  .back-btn:hover { opacity: 1; }
   .toolbar-title { font-size: 1.05rem; font-weight: 700; flex: 1; min-width: 120px; }
   .pill-count {
     background: var(--primary-color, #7c8cf8); color: #fff;
     border-radius: 20px; padding: 2px 10px; font-size: 0.75rem; font-weight: 700;
+  }
+  .pill-storage {
+    background: rgba(255,255,255,0.08); color: var(--secondary-text-color, #888);
+    border-radius: 20px; padding: 2px 10px; font-size: 0.75rem; font-weight: 600;
   }
   .filter-wrap { display: flex; gap: 8px; flex-wrap: wrap; }
   .filter-btn {
@@ -156,7 +174,7 @@ const CSS = `
     font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #111;
   }
   .lock-btn {
-    position: absolute; top: 8px; right: 8px;
+    position: absolute; top: 8px; right: 8px; z-index: 2;
     background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.2);
     border-radius: 50%; width: 26px; height: 26px; font-size: 0.75rem;
     display: flex; align-items: center; justify-content: center;
@@ -202,6 +220,30 @@ const CSS = `
     border-radius: 6px; color: #fff; font-size: 0.82rem; padding: 4px 10px; outline: none;
     width: min(320px, 80vw); font-family: inherit;
   }
+  /* Deleted clip cards */
+  .deleted-card {
+    background: var(--card-background-color, #1e2130); border-radius: 12px;
+    padding: 14px 16px; display: flex; align-items: center; gap: 12px;
+    border: 1px solid rgba(255,80,80,0.2);
+  }
+  .deleted-icon { font-size: 1.6rem; flex-shrink: 0; opacity: 0.5; }
+  .deleted-info { flex: 1; min-width: 0; }
+  .deleted-name { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .deleted-meta { font-size: 0.72rem; color: var(--secondary-text-color, #888); margin-top: 2px; }
+  .restore-btn {
+    flex-shrink: 0; background: rgba(124,140,248,0.15);
+    border: 1px solid var(--primary-color, #7c8cf8); color: var(--primary-color, #7c8cf8);
+    padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; cursor: pointer;
+    transition: background 0.15s; white-space: nowrap;
+  }
+  .restore-btn:hover { background: rgba(124,140,248,0.3); }
+  /* Modal delete button */
+  .modal-delete-btn {
+    background: none; border: 1px solid rgba(255,80,80,0.4);
+    color: rgba(255,100,100,0.8); padding: 6px 12px; border-radius: 20px;
+    font-size: 0.78rem; cursor: pointer; transition: all 0.15s; white-space: nowrap; flex-shrink: 0;
+  }
+  .modal-delete-btn:hover { background: rgba(255,80,80,0.15); border-color: rgba(255,80,80,0.7); color: #ff6464; }
   /* Footer / infinite scroll sentinel */
   .load-footer {
     padding: 20px; text-align: center;
@@ -234,10 +276,44 @@ const CSS = `
     border-radius: 10px; outline: none; background: #000;
     box-shadow: 0 20px 60px rgba(0,0,0,0.7);
   }
-  .modal-info { margin-top: 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
-  .modal-kind { padding: 3px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; color: #111; }
-  .modal-meta { color: rgba(255,255,255,0.65); font-size: 0.85rem; }
-  .modal-nav { display: flex; gap: 12px; margin-top: 16px; }
+  .modal-detail {
+    margin-top: 12px; width: 100%; max-width: min(92vw, 1100px);
+    background: rgba(255,255,255,0.05); border-radius: 10px;
+    padding: 12px 16px; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  /* Top bar: kind badge left, action buttons right */
+  .modal-detail-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .modal-kind { padding: 3px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; color: #111; flex-shrink: 0; }
+  .modal-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  /* 2-column metadata grid */
+  .modal-meta-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px;
+  }
+  .modal-meta-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .modal-meta-label {
+    font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.3);
+  }
+  .modal-meta-value {
+    font-size: 0.84rem; color: rgba(255,255,255,0.85); font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .modal-lock-btn {
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18);
+    color: #fff; padding: 6px 14px; border-radius: 20px; cursor: pointer;
+    font-size: 0.8rem; transition: background 0.15s, border-color 0.15s; white-space: nowrap;
+  }
+  .modal-lock-btn:hover { background: rgba(255,255,255,0.16); }
+  .modal-lock-btn.locked {
+    background: rgba(124,140,248,0.25); border-color: var(--primary-color, #7c8cf8);
+    color: var(--primary-color, #7c8cf8);
+  }
+  .modal-lock-btn.locked:hover { background: rgba(124,140,248,0.4); }
+  .modal-ai-text { font-size: 0.82rem; color: rgba(255,255,255,0.5); font-style: italic; }
+  .modal-nav { display: flex; gap: 12px; margin-top: 14px; }
   .nav-btn {
     background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.12);
     color: #fff; padding: 8px 20px; border-radius: 8px; cursor: pointer;
@@ -401,6 +477,9 @@ class RingClipViewer extends HTMLElement {
     this._searchText     = "";
     this._filterKind     = "all";
     this._filterDoorbell = "all";
+    this._filterLocked   = false;
+    this._filterDeleted  = false;
+    this._totalBytes     = 0;
     // Misc
     this._modalIdx      = -1;
     this._panel         = null;
@@ -433,15 +512,19 @@ class RingClipViewer extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${CSS}</style>
       <div class="toolbar">
+        <button class="back-btn" id="back-btn" title="Go back">&#8592;</button>
         <div class="toolbar-title">📹 ${this._panel?.config?.panel_title ?? "Ring Stash"}</div>
         <button class="refresh-btn" id="refresh-btn" title="Refresh clips">↻</button>
         <span class="pill-count" id="count">–</span>
+        <span class="pill-storage" id="storage">–</span>
         <input type="search" class="search-input" id="search-input" placeholder="Search AI descriptions, notes, cameras…">
         <div class="filter-wrap" id="kind-filters">
           <button class="filter-btn active" data-kind="all">All</button>
           <button class="filter-btn" data-kind="Doorbell">🔔 Doorbell</button>
           <button class="filter-btn" data-kind="Motion">👁 Motion</button>
           <button class="filter-btn" data-kind="Live">📹 Live</button>
+          <button class="filter-btn" id="locked-filter-btn">🔒 Archived</button>
+          <button class="filter-btn" id="deleted-filter-btn">🗑️ Deleted</button>
         </div>
         <select class="filter-select" id="cam-filter"><option value="all">All cameras</option></select>
         <div class="date-range">
@@ -460,17 +543,42 @@ class RingClipViewer extends HTMLElement {
       <div class="modal-bg" id="modal">
         <button class="modal-close" id="modal-close" title="Close (Esc)">✕</button>
         <video class="modal-video" id="modal-video" controls autoplay></video>
-        <div class="modal-info">
-          <span class="modal-kind" id="modal-kind"></span>
-          <span class="modal-meta" id="modal-meta"></span>
+        <div class="modal-detail" id="modal-detail">
+          <div class="modal-detail-header">
+            <span class="modal-kind" id="modal-kind"></span>
+            <div class="modal-actions">
+              <button class="modal-lock-btn" id="modal-lock-btn">🔒 Archived</button>
+              <button class="modal-delete-btn" id="modal-delete-btn">🗑️ Delete</button>
+            </div>
+          </div>
+          <div class="modal-meta-grid">
+            <div class="modal-meta-item">
+              <span class="modal-meta-label">Camera</span>
+              <span class="modal-meta-value" id="modal-camera"></span>
+            </div>
+            <div class="modal-meta-item">
+              <span class="modal-meta-label">Date</span>
+              <span class="modal-meta-value" id="modal-date"></span>
+            </div>
+            <div class="modal-meta-item">
+              <span class="modal-meta-label">Time</span>
+              <span class="modal-meta-value" id="modal-time"></span>
+            </div>
+            <div class="modal-meta-item">
+              <span class="modal-meta-label">Size</span>
+              <span class="modal-meta-value" id="modal-size"></span>
+            </div>
+          </div>
+          <div id="modal-ai-row"></div>
+          <div class="modal-label-row" id="modal-label-row"></div>
         </div>
-        <div class="modal-label-row" id="modal-label-row"></div>
         <div class="modal-nav">
           <button class="nav-btn" id="nav-prev">◀ Previous</button>
           <button class="nav-btn" id="nav-next">Next ▶</button>
         </div>
       </div>`;
 
+    this.shadowRoot.getElementById("back-btn").onclick = () => history.back();
     this.shadowRoot.getElementById("refresh-btn").onclick = () => this._resetAndLoad();
     this.shadowRoot.getElementById("search-input").value = this._searchText;
     this.shadowRoot.getElementById("search-input").addEventListener("input", e => {
@@ -483,11 +591,77 @@ class RingClipViewer extends HTMLElement {
     this.shadowRoot.getElementById("kind-filters").addEventListener("click", e => {
       const btn = e.target.closest(".filter-btn");
       if (!btn) return;
-      this.shadowRoot.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+      if (btn.id === "locked-filter-btn") {
+        this._filterLocked = !this._filterLocked;
+        btn.classList.toggle("active", this._filterLocked);
+        this._applyFilters();
+        return;
+      }
+      if (btn.id === "deleted-filter-btn") {
+        this._filterDeleted = !this._filterDeleted;
+        btn.classList.toggle("active", this._filterDeleted);
+        if (this._filterDeleted) this._loadDeletedClips();
+        else this._renderGrid();
+        return;
+      }
+      this.shadowRoot.querySelectorAll(".filter-btn:not(#locked-filter-btn)").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       this._filterKind = btn.dataset.kind;
       this._applyFilters();
     });
+
+    this.shadowRoot.getElementById("modal-lock-btn").onclick = () => {
+      const clip = this._filtered[this._modalIdx];
+      if (!clip) return;
+      // Find the lock btn on the card and delegate to existing toggle logic
+      const cardBtn = Array.from(this.shadowRoot.querySelectorAll(".lock-btn"))
+        .find(b => b.dataset.filename === clip.filename);
+      const nowLocked = !clip.locked;
+      // Update modal button immediately
+      const modalBtn = this.shadowRoot.getElementById("modal-lock-btn");
+      modalBtn.classList.toggle("locked", nowLocked);
+      modalBtn.textContent = nowLocked ? "🔒 Archived" : "🔓 Not archived";
+      // Update clip state and card
+      clip.locked = nowLocked;
+      if (cardBtn) {
+        cardBtn.classList.toggle("locked", nowLocked);
+        cardBtn.textContent = nowLocked ? "🔒" : "🔓";
+        cardBtn.title = nowLocked ? "Unlock (allow auto-deletion)" : "Lock (preserve from auto-deletion)";
+      }
+      this._hass.callApi("POST", "ring_stash/lock", { filename: clip.filename, locked: nowLocked })
+        .catch(() => {
+          // Revert on failure
+          clip.locked = !nowLocked;
+          modalBtn.classList.toggle("locked", !nowLocked);
+          modalBtn.textContent = !nowLocked ? "🔒 Archived" : "🔓 Not archived";
+          if (cardBtn) {
+            cardBtn.classList.toggle("locked", !nowLocked);
+            cardBtn.textContent = !nowLocked ? "🔒" : "🔓";
+          }
+        });
+    };
+
+    this.shadowRoot.getElementById("modal-delete-btn").onclick = () => {
+      const clip = this._filtered[this._modalIdx];
+      if (!clip) return;
+      if (!confirm(`Delete "${clip.filename}" permanently?\n\nThe clip will be removed from disk. You can restore it later if Ring still has a copy.`)) return;
+      const btn = this.shadowRoot.getElementById("modal-delete-btn");
+      btn.disabled = true;
+      btn.textContent = "Deleting…";
+      this._hass.callApi("POST", "ring_stash/delete", { filename: clip.filename })
+        .then(() => {
+          // Remove from in-memory list and close modal
+          this._allClips = this._allClips.filter(c => c.filename !== clip.filename);
+          this._total = Math.max(0, this._total - 1);
+          this._closeModal();
+          this._applyFilters();
+        })
+        .catch(() => {
+          btn.disabled = false;
+          btn.textContent = "🗑️ Delete";
+          alert("Failed to delete clip. Please try again.");
+        });
+    };
 
     this.shadowRoot.getElementById("cam-filter").onchange = e => {
       this._filterDoorbell = e.target.value;
@@ -567,6 +741,11 @@ class RingClipViewer extends HTMLElement {
     try {
       const data = await this._hass.callApi("GET", `ring_stash/clips?${p}`);
       this._total = data.total ?? 0;
+      if (data.total_bytes != null) {
+        this._totalBytes = data.total_bytes;
+        const storageEl = this.shadowRoot.getElementById("storage");
+        if (storageEl) storageEl.textContent = _formatBytes(data.total_bytes);
+      }
       this._allClips.push(...(data.clips ?? []));
       this._offset = this._allClips.length;
 
@@ -651,10 +830,66 @@ class RingClipViewer extends HTMLElement {
 
   // ── Filtering & rendering ───────────────────────────────────────────────
 
+  async _loadDeletedClips() {
+    const grid = this.shadowRoot.getElementById("grid");
+    if (grid) grid.innerHTML = `<div class="state-msg"><div class="icon">⏳</div>Loading deleted clips…</div>`;
+    try {
+      const data = await this._hass.callApi("GET", "ring_stash/deleted");
+      const clips = data.clips ?? [];
+      if (!grid) return;
+      if (!clips.length) {
+        grid.innerHTML = `<div class="state-msg"><div class="icon">🗑️</div>No deleted clips.</div>`;
+        return;
+      }
+      grid.innerHTML = `<div class="grid">${clips.map(clip => {
+        const icon = KIND_ICON[clip.kind] || "🎬";
+        const date = clip.recorded_at ? new Date(clip.recorded_at).toLocaleString() : "Unknown date";
+        return `
+          <div class="deleted-card">
+            <div class="deleted-icon">${icon}</div>
+            <div class="deleted-info">
+              <div class="deleted-name">${_esc(clip.filename)}</div>
+              <div class="deleted-meta">${_esc(clip.doorbell)} · ${date}</div>
+            </div>
+            <button class="restore-btn" data-filename="${_esc(clip.filename)}">↩️ Restore</button>
+          </div>`;
+      }).join("")}</div>`;
+      grid.querySelectorAll(".restore-btn").forEach(btn => {
+        btn.onclick = async () => {
+          btn.disabled = true;
+          btn.textContent = "Requesting…";
+          try {
+            await this._hass.callApi("POST", "ring_stash/restore", { filename: btn.dataset.filename });
+            // Show inline feedback on the card
+            const card = btn.closest(".deleted-card");
+            if (card) {
+              card.style.opacity = "0.5";
+              btn.textContent = "⏳ Re-downloading from Ring…";
+            }
+            // Switch back to normal view after ~10 s — enough time for the 30-second
+            // retry cycle to pick up the clip and download it
+            setTimeout(() => {
+              this._filterDeleted = false;
+              const delBtn = this.shadowRoot.getElementById("deleted-filter-btn");
+              if (delBtn) delBtn.classList.remove("active");
+              this._resetAndLoad();
+            }, 10_000);
+          } catch {
+            btn.disabled = false;
+            btn.textContent = "↩️ Restore";
+          }
+        };
+      });
+    } catch (err) {
+      if (grid) grid.innerHTML = `<div class="state-msg"><div class="icon">⚠️</div>Failed to load: ${err.message}</div>`;
+    }
+  }
+
   _applyFilters() {
     this._filtered = this._allClips.filter(c =>
       (this._filterKind     === "all" || c.kind     === this._filterKind) &&
-      (this._filterDoorbell === "all" || c.doorbell === this._filterDoorbell)
+      (this._filterDoorbell === "all" || c.doorbell === this._filterDoorbell) &&
+      (!this._filterLocked  || c.locked)
     );
     this._renderGrid();
   }
@@ -913,25 +1148,38 @@ class RingClipViewer extends HTMLElement {
     video.play().catch(() => {});
     this.shadowRoot.getElementById("modal-kind").textContent = `${KIND_ICON[clip.kind] || ""} ${clip.kind}`;
     this.shadowRoot.getElementById("modal-kind").style.background = KIND_COLOR[clip.kind] || "#888";
-    this.shadowRoot.getElementById("modal-meta").textContent =
-      `${clip.doorbell} · ${new Date(clip.recorded_at).toLocaleString()} · ${clip.size_kb} KB`;
+    const recDate = clip.recorded_at ? new Date(clip.recorded_at) : null;
+    this.shadowRoot.getElementById("modal-camera").textContent = clip.doorbell || "—";
+    this.shadowRoot.getElementById("modal-date").textContent   = recDate
+      ? recDate.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "—";
+    this.shadowRoot.getElementById("modal-time").textContent   = recDate
+      ? recDate.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+    this.shadowRoot.getElementById("modal-size").textContent   = clip.size_kb
+      ? _formatBytes(clip.size_kb * 1024) : "—";
 
-    // Label / AI description row
+    // Lock button
+    const lockBtn = this.shadowRoot.getElementById("modal-lock-btn");
+    lockBtn.classList.toggle("locked", !!clip.locked);
+    lockBtn.textContent = clip.locked ? "🔒 Archived" : "🔓 Not archived";
+
+    // AI description
+    const aiRow = this.shadowRoot.getElementById("modal-ai-row");
+    if (aiRow) {
+      aiRow.innerHTML = clip.ai_description
+        ? `<div class="modal-ai-text">${_esc(clip.ai_description)}</div>`
+        : "";
+    }
+
+    // Label row
     const labelRow = this.shadowRoot.getElementById("modal-label-row");
     if (labelRow) {
       labelRow.innerHTML = "";
-      if (clip.ai_description) {
-        const ai = document.createElement("span");
-        ai.className   = "modal-ai";
-        ai.textContent = clip.ai_description;
-        labelRow.appendChild(ai);
-      }
       const labelEl = document.createElement("span");
-      labelEl.className   = clip.label ? "modal-label-text" : "modal-label-empty";
+      labelEl.className        = clip.label ? "modal-label-text" : "modal-label-empty";
       labelEl.dataset.filename = clip.filename;
-      labelEl.textContent = clip.label || "＋ Add note";
-      labelEl.title       = clip.label ? "Click to edit note" : "Click to add a note";
-      labelEl.onclick     = () => this._editModalLabel(labelEl);
+      labelEl.textContent      = clip.label || "＋ Add note";
+      labelEl.title            = clip.label ? "Click to edit note" : "Click to add a note";
+      labelEl.onclick          = () => this._editModalLabel(labelEl);
       labelRow.appendChild(labelEl);
     }
 

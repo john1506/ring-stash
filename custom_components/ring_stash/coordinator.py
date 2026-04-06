@@ -119,6 +119,8 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
         self._ai_descriptions: dict[str, str] = {}
         # Doorbell IDs that have completed one full paged history scan.
         self._history_scan_complete: set[str] = set()
+        # ding_ids tombstoned by a manual delete — prevents automatic re-download
+        self._deleted_ids: set[str] = set()
         self._store_data: dict = {}
         self._store_loaded = False
         # Ensures the one-time background full-history scan is only scheduled once.
@@ -140,7 +142,9 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             return
         raw = await self._store.async_load() or {}
         self._store_data = raw
-        self._downloaded_ids = set(raw.get("downloaded", {}).keys())
+        deleted_map: dict = raw.get("deleted", {})  # {ding_id: filename}
+        self._deleted_ids = set(deleted_map.keys())
+        self._downloaded_ids = set(raw.get("downloaded", {}).keys()) | self._deleted_ids
         self._locked_filenames = set(raw.get("locked", []))
         self._labels = dict(raw.get("labels", {}))
         self._history_scan_complete = {str(v) for v in raw.get("history_scan_complete", [])}
@@ -184,6 +188,85 @@ class RingClipCoordinator(DataUpdateCoordinator[dict[str, DoorbellData]]):
             self._labels[filename] = label
         else:
             self._labels.pop(filename, None)
+        await self._async_save_store()
+
+    # ── Delete / restore helpers ──────────────────────────────────────────────
+
+    def deleted_clips(self) -> list[dict]:
+        """Return metadata for tombstoned clips (deleted from disk but restorable)."""
+        deleted_map: dict = self._store_data.get("deleted", {})
+        result = []
+        for k, v in deleted_map.items():
+            entry = v if isinstance(v, dict) else {"filename": v}
+            result.append({"ding_id": k, **entry})
+        return result
+
+    async def async_delete_clip(self, filename: str) -> None:
+        """Delete a clip from disk and tombstone its ding_id to prevent re-download.
+
+        Full metadata is stored in the tombstone so ``async_restore_clip`` can
+        immediately queue a re-download without waiting for a history scan.
+        """
+        path = self._download_path / filename
+        await self.hass.async_add_executor_job(_unlink_if_exists_path, path)
+
+        downloaded: dict = self._store_data.get("downloaded", {})
+        ding_id = next((k for k, v in downloaded.items() if v.get("filename") == filename), None)
+        if ding_id:
+            meta = downloaded.pop(ding_id)
+            self._deleted_ids.add(ding_id)
+            self._downloaded_ids.add(ding_id)
+            self._store_data.setdefault("deleted", {})[ding_id] = {
+                "filename":      filename,
+                "doorbell_id":   meta.get("doorbell_id", ""),
+                "doorbell_name": meta.get("doorbell_name", ""),
+                "kind":          meta.get("kind", ""),
+                "recorded_at":   meta.get("recorded_at", ""),
+            }
+
+        self._labels.pop(filename, None)
+        self._ai_descriptions.pop(filename, None)
+        self._locked_filenames.discard(filename)
+        await self._async_save_store()
+
+    async def async_restore_clip(self, filename: str) -> None:
+        """Remove a clip's tombstone and immediately queue a re-download attempt.
+
+        Adds the clip to the pending queue so the coordinator retries within
+        30 seconds rather than waiting for the next scheduled poll.
+        Ring must still have the clip available for the re-download to succeed.
+        """
+        deleted_map: dict = self._store_data.get("deleted", {})
+        ding_id: str | None = None
+        entry: dict = {}
+        for k, v in deleted_map.items():
+            fn = v.get("filename") if isinstance(v, dict) else v
+            if fn == filename:
+                ding_id = k
+                entry = v if isinstance(v, dict) else {"filename": v}
+                break
+
+        if not ding_id:
+            return
+
+        deleted_map.pop(ding_id)
+        self._deleted_ids.discard(ding_id)
+        self._downloaded_ids.discard(ding_id)
+
+        # Queue an immediate re-download attempt — triggers 30-second retry interval
+        if entry.get("doorbell_id"):
+            try:
+                recorded_at = datetime.fromisoformat(entry.get("recorded_at", ""))
+            except (ValueError, AttributeError):
+                recorded_at = datetime.now(timezone.utc)
+            self._pending[ding_id] = _PendingClip(
+                ding_id=ding_id,
+                doorbell_id=entry["doorbell_id"],
+                doorbell_name=entry.get("doorbell_name", ""),
+                kind=entry.get("kind", "unknown"),
+                recorded_at=recorded_at,
+            )
+
         await self._async_save_store()
 
     # ── AI description helpers ────────────────────────────────────────────────

@@ -93,6 +93,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(RingClipLockView())
         hass.http.register_view(RingClipLabelView())
         hass.http.register_view(RingClipMediaView())
+        hass.http.register_view(RingClipDeleteView())
+        hass.http.register_view(RingClipRestoreView())
+        hass.http.register_view(RingDeletedClipsView())
         domain_data["_views_registered"] = True
 
     # Update the sidebar panel config on every reload so title and frontend
@@ -312,6 +315,16 @@ class RingClipListView(HomeAssistantView):
             matched.append((f, file_date, file_time, doorbell, kind, label, ai_description))
 
         total = len(matched)
+
+        # Sum sizes for all matched files (not just the current page) so the
+        # toolbar can show accurate total storage regardless of pagination state.
+        total_bytes = 0
+        for f, *_ in matched:
+            try:
+                total_bytes += f.stat().st_size
+            except OSError:
+                pass
+
         page  = matched[offset : offset + limit]
 
         clips = []
@@ -332,7 +345,7 @@ class RingClipListView(HomeAssistantView):
                 "ai_description": ai_description,
             })
 
-        return {"total": total, "clips": clips}
+        return {"total": total, "total_bytes": total_bytes, "clips": clips}
 
 
 class RingClipLockView(HomeAssistantView):
@@ -444,6 +457,126 @@ class RingClipLabelView(HomeAssistantView):
             body=json.dumps({"filename": filename, "label": label}),
             content_type="application/json",
         )
+
+
+class RingClipDeleteView(HomeAssistantView):
+    """
+    POST /api/ring_stash/delete
+    Body: {"filename": "front_door_2026-04-04_14-01-25_Doorbell.mp4"}
+
+    Deletes a clip from disk and tombstones its ding_id so the coordinator
+    will not automatically re-download it. Use /restore to reverse this.
+    """
+
+    url = "/api/ring_stash/delete"
+    name = "api:ring_stash:delete"
+    requires_auth = True
+
+    async def post(self, request):
+        from aiohttp.web import Response
+        import json
+
+        try:
+            body = await request.json()
+        except Exception:
+            return Response(status=400, text="Invalid JSON")
+
+        filename = body.get("filename", "")
+        if not _is_safe_filename(filename):
+            return Response(status=400, text="Invalid filename")
+
+        hass        = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if coordinator is None:
+            return Response(status=503, text="Coordinator not available")
+
+        await coordinator.async_delete_clip(filename)
+        return Response(body=json.dumps({"deleted": filename}), content_type="application/json")
+
+
+class RingClipRestoreView(HomeAssistantView):
+    """
+    POST /api/ring_stash/restore
+    Body: {"filename": "front_door_2026-04-04_14-01-25_Doorbell.mp4"}
+
+    Removes a clip's tombstone so the coordinator will attempt to re-download
+    it from Ring on the next poll cycle (requires Ring to still have the clip).
+    """
+
+    url = "/api/ring_stash/restore"
+    name = "api:ring_stash:restore"
+    requires_auth = True
+
+    async def post(self, request):
+        from aiohttp.web import Response
+        import json
+
+        try:
+            body = await request.json()
+        except Exception:
+            return Response(status=400, text="Invalid JSON")
+
+        filename = body.get("filename", "")
+        if not _is_safe_filename(filename):
+            return Response(status=400, text="Invalid filename")
+
+        hass        = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if coordinator is None:
+            return Response(status=503, text="Coordinator not available")
+
+        await coordinator.async_restore_clip(filename)
+        return Response(body=json.dumps({"restored": filename}), content_type="application/json")
+
+
+class RingDeletedClipsView(HomeAssistantView):
+    """
+    GET /api/ring_stash/deleted
+
+    Returns the list of tombstoned (manually deleted) clips with filename-derived
+    metadata so the frontend can show a restorable deleted items view.
+    """
+
+    url = "/api/ring_stash/deleted"
+    name = "api:ring_stash:deleted"
+    requires_auth = True
+
+    async def get(self, request):
+        from aiohttp.web import Response
+        import json
+
+        hass        = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if coordinator is None:
+            return Response(body=json.dumps({"clips": []}), content_type="application/json")
+
+        raw = coordinator.deleted_clips()  # [{"ding_id": ..., "filename": ...}]
+        clips = [self._parse(entry) for entry in raw]
+        return Response(body=json.dumps({"clips": clips}), content_type="application/json")
+
+    @staticmethod
+    def _parse(entry: dict) -> dict:
+        # entry comes from coordinator.deleted_clips() — always has "filename" key
+        name       = Path(entry.get("filename", "")).stem
+        date_parts = name.split("_")
+        file_date = file_time = doorbell = ""
+        kind = "Unknown"
+        try:
+            idx       = next(i for i, p in enumerate(date_parts) if len(p) == 10 and p[4] == "-")
+            file_date = date_parts[idx]
+            file_time = date_parts[idx + 1].replace("-", ":")
+            doorbell  = " ".join(date_parts[:idx]).replace("_", " ").title()
+            kind      = date_parts[-1] if len(date_parts) > idx + 2 else "Unknown"
+        except (StopIteration, IndexError):
+            doorbell = name
+        recorded_at = f"{file_date}T{file_time}+00:00" if file_date and file_time else ""
+        return {
+            "filename":    entry["filename"],
+            "ding_id":     entry["ding_id"],
+            "doorbell":    doorbell,
+            "kind":        kind,
+            "recorded_at": recorded_at,
+        }
 
 
 class RingClipMediaView(HomeAssistantView):
