@@ -1,8 +1,12 @@
 name: Hassfest
 
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
 
@@ -10,6 +14,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Hassfest
         uses: home-assistant/actions/hassfest@master
