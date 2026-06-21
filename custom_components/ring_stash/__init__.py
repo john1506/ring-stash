@@ -14,10 +14,15 @@ import json
 import logging
 from pathlib import Path
 
+from aiohttp.web_exceptions import HTTPForbidden
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.components.http import HomeAssistantView, StaticPathConfig
+from homeassistant.components.http import (
+    KEY_HASS_USER,
+    HomeAssistantView,
+    StaticPathConfig,
+)
 from homeassistant.components.frontend import (
     async_register_built_in_panel,
     async_remove_panel,
@@ -115,7 +120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             },
             "panel_title": panel_title,
         },
-        require_admin=False,
+        require_admin=True,
         update=True,
     )
 
@@ -199,7 +204,13 @@ def _get_coordinator(hass, entry_id: str | None = None):
 
 def _is_safe_filename(filename: str) -> bool:
     """Return True if the value is a plain basename with no path separators."""
-    return bool(filename) and "/" not in filename and "\\" not in filename and filename == Path(filename).name
+    return (
+        bool(filename)
+        and filename not in {".", ".."}
+        and "/" not in filename
+        and "\\" not in filename
+        and filename == Path(filename).name
+    )
 
 
 def _normalize_search_text(value: str) -> str:
@@ -226,7 +237,7 @@ class RingClipListView(HomeAssistantView):
     Returns a JSON list of clip metadata for the frontend panel.
     Requires HA authentication (HomeAssistantView enforces this by default).
     File paths are never included in the response — only filenames served
-    via the /media endpoint.
+    via the authenticated clip media endpoint.
     """
 
     url = "/api/ring_stash/clips"
@@ -584,22 +595,26 @@ class RingClipMediaView(HomeAssistantView):
     GET /ring_stash_media/{filename}
 
     Serves clip files from the currently configured download directory.
-    The route is intentionally no-auth to match the previous static-path
-    behavior used by the in-app video and thumbnail elements.
+    Home Assistant authentication is required because these files contain
+    private camera footage. Access is restricted to administrators to match
+    the admin-only sidebar panel.
     """
 
     url = "/ring_stash_media/{filename}"
     name = "api:ring_stash:media"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request, filename):
         from aiohttp.web import FileResponse, Response
+
+        if not request[KEY_HASS_USER].is_admin:
+            raise HTTPForbidden
 
         if not _is_safe_filename(filename):
             return Response(status=400, text="Invalid filename")
 
         path = _get_download_path(request.app["hass"]) / filename
-        exists = await request.app["hass"].async_add_executor_job(path.exists)
-        if not exists:
+        is_file = await request.app["hass"].async_add_executor_job(path.is_file)
+        if not is_file:
             return Response(status=404, text="Not found")
         return FileResponse(path)

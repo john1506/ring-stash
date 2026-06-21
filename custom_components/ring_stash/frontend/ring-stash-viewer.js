@@ -385,8 +385,22 @@ async function _deleteThumbKeys(keys) {
 }
 
 /* ── Canvas thumbnail extraction ─────────────────────────────────────────── */
-async function extractThumbnail(videoUrl, canvas, onDone) {
-  const cached = await _getCached(videoUrl);
+async function extractThumbnail(cacheKey, getVideoUrl, canvas, onDone) {
+  const extract = async () => {
+    let videoUrl;
+    try {
+      videoUrl = await getVideoUrl();
+    } catch {
+      onDone(false);
+      return;
+    }
+    _extractFromVideo(videoUrl, cacheKey, canvas, ok => {
+      URL.revokeObjectURL(videoUrl);
+      onDone(ok);
+    });
+  };
+
+  const cached = await _getCached(cacheKey);
   if (cached) {
     const img = new Image();
     img.onload = () => {
@@ -395,14 +409,14 @@ async function extractThumbnail(videoUrl, canvas, onDone) {
       canvas.getContext("2d").drawImage(img, 0, 0);
       onDone(true);
     };
-    img.onerror = () => _extractFromVideo(videoUrl, canvas, onDone);
+    img.onerror = () => extract();
     img.src = cached;
     return;
   }
-  _extractFromVideo(videoUrl, canvas, onDone);
+  extract();
 }
 
-function _extractFromVideo(videoUrl, canvas, onDone) {
+function _extractFromVideo(videoUrl, cacheKey, canvas, onDone) {
   const vid = document.createElement("video");
   vid.muted = true;
   vid.preload = "metadata";
@@ -430,7 +444,7 @@ function _extractFromVideo(videoUrl, canvas, onDone) {
       const cx = Math.floor(canvas.width / 2), cy = Math.floor(canvas.height / 2);
       const px = ctx.getImageData(cx - 4, cy - 4, 8, 8).data;
       const hasContent = px.some((v, i) => i % 4 !== 3 && v > 8);
-      if (hasContent) _putCached(videoUrl, canvas.toDataURL("image/jpeg", 0.7));
+      if (hasContent) _putCached(cacheKey, canvas.toDataURL("image/jpeg", 0.7));
       finish(true);
     } catch {
       finish(false);
@@ -490,6 +504,7 @@ class RingClipViewer extends HTMLElement {
     this._searchDebounce = null; // timeout handle for server-backed search input
     this._thumbObs      = null;  // IntersectionObserver for lazy thumbnails
     this._sentinelObs   = null;  // IntersectionObserver for infinite scroll
+    this._modalMediaUrl = null;
   }
 
   set panel(p) { this._panel = p; }
@@ -506,6 +521,10 @@ class RingClipViewer extends HTMLElement {
     if (this._searchDebounce) { clearTimeout(this._searchDebounce); this._searchDebounce = null; }
     if (this._thumbObs)    { this._thumbObs.disconnect();    this._thumbObs    = null; }
     if (this._sentinelObs) { this._sentinelObs.disconnect(); this._sentinelObs = null; }
+    if (this._modalMediaUrl) {
+      URL.revokeObjectURL(this._modalMediaUrl);
+      this._modalMediaUrl = null;
+    }
   }
 
   _render() {
@@ -932,7 +951,7 @@ class RingClipViewer extends HTMLElement {
         return `
           <div class="clip-card" data-idx="${idx}">
             <div class="thumb-wrap">
-              <canvas class="thumb-canvas" data-src="${MEDIA_BASE}/${encodeURIComponent(clip.filename)}"></canvas>
+              <canvas class="thumb-canvas" data-filename="${_esc(clip.filename)}"></canvas>
               <div class="thumb-loading"><div class="spinner"></div></div>
               <span class="kind-badge" style="background:${color}">${icon} ${clip.kind}</span>
               <button class="lock-btn ${clip.locked ? "locked" : ""}" data-filename="${clip.filename}"
@@ -1016,7 +1035,9 @@ class RingClipViewer extends HTMLElement {
         if (!entry.isIntersecting) return;
         const canvas = entry.target;
         this._thumbObs.unobserve(canvas);
-        extractThumbnail(canvas.dataset.src, canvas, ok => {
+        const filename = canvas.dataset.filename;
+        const cacheKey = `${MEDIA_BASE}/${encodeURIComponent(filename)}`;
+        extractThumbnail(cacheKey, () => this._fetchMediaUrl(filename), canvas, ok => {
           canvas.nextElementSibling?.remove(); // remove spinner
           if (!ok) {
             const ph = document.createElement("div");
@@ -1139,13 +1160,38 @@ class RingClipViewer extends HTMLElement {
 
   // ── Modal ────────────────────────────────────────────────────────────────
 
+  async _fetchMediaUrl(filename) {
+    const response = await this._hass.fetchWithAuth(
+      `${MEDIA_BASE}/${encodeURIComponent(filename)}`
+    );
+    if (!response.ok) throw new Error(`Clip request failed: ${response.status}`);
+    return URL.createObjectURL(await response.blob());
+  }
+
   _openModal(idx) {
     this._modalIdx = idx;
     const clip  = this._filtered[idx];
     const video = this.shadowRoot.getElementById("modal-video");
-    video.src = `${MEDIA_BASE}/${encodeURIComponent(clip.filename)}`;
-    video.load();
-    video.play().catch(() => {});
+    video.pause();
+    video.removeAttribute("src");
+    if (this._modalMediaUrl) {
+      URL.revokeObjectURL(this._modalMediaUrl);
+      this._modalMediaUrl = null;
+    }
+    this._fetchMediaUrl(clip.filename)
+      .then(mediaUrl => {
+        if (this._modalIdx !== idx) {
+          URL.revokeObjectURL(mediaUrl);
+          return;
+        }
+        this._modalMediaUrl = mediaUrl;
+        video.src = mediaUrl;
+        video.load();
+        video.play().catch(() => {});
+      })
+      .catch(() => {
+        // Metadata and actions remain usable if the clip cannot be loaded.
+      });
     this.shadowRoot.getElementById("modal-kind").textContent = `${KIND_ICON[clip.kind] || ""} ${clip.kind}`;
     this.shadowRoot.getElementById("modal-kind").style.background = KIND_COLOR[clip.kind] || "#888";
     const recDate = clip.recorded_at ? new Date(clip.recorded_at) : null;
@@ -1191,6 +1237,11 @@ class RingClipViewer extends HTMLElement {
   _closeModal() {
     const video = this.shadowRoot.getElementById("modal-video");
     video.pause(); video.src = "";
+    if (this._modalMediaUrl) {
+      URL.revokeObjectURL(this._modalMediaUrl);
+      this._modalMediaUrl = null;
+    }
+    this._modalIdx = -1;
     this.shadowRoot.getElementById("modal").classList.remove("open");
   }
 
